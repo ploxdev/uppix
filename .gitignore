@@ -1,0 +1,19 @@
+# Derleme çıktıları ve ara dosyalar
+*.c
+!derleyici/uppc.c
+!onyukleyici/limine/limine.c
+!kullanici/*.c
+!kullanici/glibc/*.c
+*.o
+*.obj
+*.exe
+*.out
+*.elf
+*.img
+derleme/
+derleyici/uppc
+tests/_cikti/
+
+# Python
+__pycache__/
+*.py[cod]

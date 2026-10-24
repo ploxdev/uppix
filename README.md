@@ -19,10 +19,19 @@ Uzun ve Türkçe bir dosya adı: şğüöçı ŞĞÜÖÇİ
 
 ## Çalıştırma
 
+Uppix, [U++](https://github.com/ploxdev/upp-lang) diliyle yazılmıştır. Derleyici bu depoda tek bir C dosyası olarak durur ([`derleyici/`](derleyici)); önce onu kurun:
+
+```bash
+sh derleyici/kur.sh          # Linux / WSL  → derleyici/uppc
+derleyici\kur.cmd           # Windows (MinGW-w64) → derleyici\uppc.exe
+```
+
+Aşağıdaki `uppc`, `derleyici/uppc` (Windows'ta `derleyici\uppc.exe`) demektir.
+
 Gerekenler: `gcc`, `ld` ve `qemu-system-x86_64` (Windows'ta WSL içinde de olur). Disk imajı için `mkfs.ext4` (e2fsprogs), `sfdisk` (fdisk), `mkfs.fat` ve `mtools` gerekir; exFAT örnek diski için `mkfs.exfat` (`sudo apt install e2fsprogs dosfstools mtools exfatprogs fdisk`).
 
 ```bash
-uppc calistir src/os
+uppc calistir .
 ```
 
 Bu komut çekirdeği derler, [`disk_yap.sh`](disk_yap.sh) ile önyüklenebilir `uppix.img` imajını hazırlar (`upp.proje` içindeki `onyukleyici = limine` ve `disk_hazirla`) ve QEMU'yu üç diskle ve seri konsolla başlatır. QEMU, Limine'i diskin MBR'sinden yükler; Limine de çekirdeği FAT32 bölümünden okuyup 64-bit kipte başlatır. Komutları terminale yazarsınız. İmajlar `derleme/` altında kalır: sonraki derlemelerde yalnızca `/boot/uppix.elf` güncellenir, kökte yaptığınız değişiklikler yerinde kalır. Sıfırdan başlamak için `derleme/*.img` dosyalarını silin.
@@ -36,8 +45,8 @@ Bu komut çekirdeği derler, [`disk_yap.sh`](disk_yap.sh) ile önyüklenebilir `
 Klavye ve ekranla bir pencerede açmak için (Limine menüsü, ardından çerçeve tamponu konsolu):
 
 ```bash
-uppc derle src/os
-qemu-system-x86_64 -m 256 -serial stdio -drive file=src/os/derleme/uppix.img,format=raw
+uppc derle .
+qemu-system-x86_64 -m 256 -serial stdio -drive file=derleme/uppix.img,format=raw
 ```
 
 UEFI ile açmak için QEMU'ya OVMF verin, örneğin `-bios /usr/share/qemu/OVMF.fd`. Aynı imaj gerçek bir USB belleğe de yazılabilir (`dd if=uppix.img of=/dev/sdX`).
@@ -56,7 +65,7 @@ Eski Multiboot yolu da durur: `--onyukleyici multiboot` (varsayılan) ile çekir
 - **Satır düzenleyici:** ↑/↓ geçmiş, ←/→, Home/End, Delete, Tab ile komut ve dosya adı tamamlama, Ctrl-A/E/U/K/W/L/C/D.
 - **Görevler:** işbirlikçi çoklu görev (en çok 32 görev, her biri 64 KiB yığınla). Görevler `sleep` sırasında ve girdi beklenirken sıra verir. `ps`, `kill` ve `jobs` ile yönetilirler.
 - **Önyükleme:** [Limine](onyukleyici/limine) v11.4.1 depoya gömülüdür (BIOS aşamaları, `BOOTX64.EFI` ve `bios-install` aracının kaynağı). Çekirdek, `0xffffffff80000000`'da duran bir ELF64'tür. Limine protokolünün istekleriyle bellek haritasını, çerçeve tamponunu, HHDM'yi ve çekirdeğin fiziksel adresini alır. Sonra kendi sayfa tablolarını kurar: çekirdek kendi yüksek adresinde 4 KiB sayfalarla, tüm fiziksel bellek de HHDM'de 2 MiB sayfalarla eşlenir (çerçeve tamponu PAT ile write-combining). Alt yarı boş kalır, kullanıcı süreçlerinindir. GDT/TSS, `SYSCALL` ve NX/SMEP/SMAP kurulur. 8259 PIC kesmeleri doğrudan gelsin diye yerel APIC kapatılır.
-- **Ekran:** Limine ekranı grafik kipte bırakır. Uppix bu çerçeve tamponuna kendi metin konsolunu çizer: [Terminus](../runtime/TERMINUS_LISANS.txt) 8x16 yazı tipi (Türkçe karakterler dahil), ANSI renkleri (ön ve arka plan, ters video), imleç hareketleri, kutu çizgileri, kaydırma ve alt çizgi imleç. Satır sarma VT100'deki gibi ertelenir: sağ alt hücreye yazmak ekranı kaydırmaz, bu yüzden tam ekran programlar son satırı da kullanabilir. Multiboot ile açılınca VGA metin ekranı kullanılır.
+- **Ekran:** Limine ekranı grafik kipte bırakır. Uppix bu çerçeve tamponuna kendi metin konsolunu çizer: [Terminus](https://github.com/ploxdev/upp-lang/blob/main/src/runtime/TERMINUS_LISANS.txt) 8x16 yazı tipi (Türkçe karakterler dahil), ANSI renkleri (ön ve arka plan, ters video), imleç hareketleri, kutu çizgileri, kaydırma ve alt çizgi imleç. Satır sarma VT100'deki gibi ertelenir: sağ alt hücreye yazmak ekranı kaydırmaz, bu yüzden tam ekran programlar son satırı da kullanabilir. Multiboot ile açılınca VGA metin ekranı kullanılır.
 - **Donanım:** Limine/Multiboot bellek haritası, CMOS saati (dosya zamanları Unix saniyesidir), CPUID, ACPI ile kapatma, 8042 ile yeniden başlatma.
 
 ## Kullanıcı kipi (ring 3) ve Linux sistem çağrıları
@@ -139,7 +148,7 @@ Desteklenmeyen bir çağrı `-ENOSYS` döndürür ve `dmesg`'e bir kez yazılır
 Kendi programınızı eklemek için `kullanici/` altına bir `.c` dosyası koyun (`#include "linux.h"`, `int main(int argc, char** argv, char** envp)`). İmaj zaten varsa sonraki derleme `/usr/bin`'deki programları günceller. Aynı ikili Linux'ta da çalışır:
 
 ```bash
-gcc -static -nostdlib -fno-pie -no-pie -ffreestanding -O2 -o merhaba src/os/kullanici/merhaba.c
+gcc -static -nostdlib -fno-pie -no-pie -ffreestanding -O2 -o merhaba kullanici/merhaba.c
 ```
 
 **Mimari:**
@@ -153,7 +162,7 @@ gcc -static -nostdlib -fno-pie -no-pie -ffreestanding -O2 -o merhaba src/os/kull
 - **İlk yığın:** SysV ABI'ye göre `argc`, `argv`, `envp` ve auxv (`AT_PHDR`, `AT_ENTRY`, `AT_PAGESZ`, `AT_RANDOM`, `AT_EXECFN`…) kurulur, yani libc başlangıç kodları da çalışabilir.
 - **Giriş ve geçiş:** Sistem çağrıları `SYSCALL`/`SYSRET` ile gelir. GDT'de çekirdek ve kullanıcı segmentleri ve bir TSS vardır. Görev geçişi CR3'ü, `TSS.rsp0`'ı ve sürecin FS/GS tabanını (`arch_prctl`, TLS) değiştirir.
 - **Zamanlama:** Çekirdek kodu işbirlikçidir; ring 3 kodu ise zamanlayıcıyla kesilir ve 10 ms'lik dilimi dolunca sırasını verir. Bu yüzden `dongu &` çalışırken kabuk yanıt vermeye devam eder.
-- **Mekanizma ve politika:** Mekanizma C'dedir ([`upp_kullanici.c`](../runtime/upp_kullanici.c)): GDT/TSS, SYSCALL girişi, sayfa tabloları, kullanıcı belleğine izin denetimli kopyalama. Politika u++'tadır ([`surec.upp`](kaynak/surec.upp), [`sistem_cagrisi.upp`](kaynak/sistem_cagrisi.upp), [`sistem_cagrisi_dosya.upp`](kaynak/sistem_cagrisi_dosya.upp), [`sistem_cagrisi_surec.upp`](kaynak/sistem_cagrisi_surec.upp)): süreç tablosu, dosya tanımlayıcıları, çalışma dizini, umask, sinyal eylemleri, kaynak sınırları, ELF yükleme, mmap yerleşimi ve çağrıların anlamı.
+- **Mekanizma ve politika:** Mekanizma C'dedir ([`upp_kullanici.c`](https://github.com/ploxdev/upp-lang/blob/main/src/runtime/upp_kullanici.c)): GDT/TSS, SYSCALL girişi, sayfa tabloları, kullanıcı belleğine izin denetimli kopyalama. Politika u++'tadır ([`surec.upp`](kaynak/surec.upp), [`sistem_cagrisi.upp`](kaynak/sistem_cagrisi.upp), [`sistem_cagrisi_dosya.upp`](kaynak/sistem_cagrisi_dosya.upp), [`sistem_cagrisi_surec.upp`](kaynak/sistem_cagrisi_surec.upp)): süreç tablosu, dosya tanımlayıcıları, çalışma dizini, umask, sinyal eylemleri, kaynak sınırları, ELF yükleme, mmap yerleşimi ve çağrıların anlamı.
 
 Kullanıcı kipi yalnızca Limine ile açılışta vardır. Multiboot'ta çekirdek alt yarıyı (ilk 1 GiB) birebir kullandığından ELF çalıştırmak açık bir hatayla reddedilir.
 
@@ -212,20 +221,27 @@ root@uppix:~# umount /mnt/sdb1
 
 Her dosya sistemi sürücüsü fonksiyon değerlerinden oluşan bir `sinif Surucu`'dur: `bagla`, `yukle` (dizini önbelleğe al), `oku`, `yaz`, `olustur`, `sil`, `tasi`, `oznitelik`, `alan`. VFS hangi düğümün hangi bağlamaya ait olduğunu bilir ve doğru sürücüyü çağırır. Dizinler ilk erişimde yüklenir. Komutlar dosya sisteminden habersizdir; `cp /root/a.txt /mnt/sdc/` gibi diskler arası kopyalama aynı kodla çalışır.
 
-İkili veri `upp.tampon.*` ile işlenir. Bunlar sınır denetimli bayt tamponlarıdır: küçük sonlu okuma/yazma, UTF-16, CRC32C. Disk erişimi `upp.cekirdek.disk_oku/disk_yaz` ile yapılır. Ayrıntılar için [API belgesine](../../docs/API_tr.md) bakın.
+İkili veri `upp.tampon.*` ile işlenir. Bunlar sınır denetimli bayt tamponlarıdır: küçük sonlu okuma/yazma, UTF-16, CRC32C. Disk erişimi `upp.cekirdek.disk_oku/disk_yaz` ile yapılır. Ayrıntılar için [U++ API belgesine](https://github.com/ploxdev/upp-lang/blob/main/docs/API_tr.md) bakın.
 
 ### Testler
 
+Testler QEMU'da açılır; seri porttan komut gönderir, çıktıyı ve (gerekirse) disk imajlarını Linux araçlarıyla denetler:
+
+```bash
+python3 tests/run_tests.py --uppc derleyici/uppc            # hepsi
+python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix_kullanici.upp
+```
+
 | Test | Ne yapar |
 |---|---|
-| `tests/cekirdek/08_uppix.upp` | Disksiz açılış (RAM kök); 25 kabuk komutu |
-| `tests/cekirdek/09_uppix_disk.upp` | İmajları sıfırdan üretir, üç dosya sistemine yazar, sonra Linux araçlarıyla denetler: `e2fsck -fn`, `debugfs`, `fsck.fat`, `mtype`, `fsck.exfat` |
-| `tests/cekirdek/10_uppix_kalici.upp` | Aynı imajlarla ikinci açılış: yazılanlar yerinde mi |
-| `tests/cekirdek/13_uppix_kullanici.upp` | Ring 3: argv/çıkış kodu, `sctest`, `sctest2`, glibc ile derlenmiş `gmerhaba`, terminal ioctl'u, boru, SIGSEGV, zaman dilimiyle kesilen döngü ve `kill`; üç programın çıktısı gerçek Linux'takiyle `diff` ile karşılaştırılır, ext4 kök sonra `e2fsck` ile denetlenir |
-| `tests/cekirdek/15_uppix_disk_kaynak.upp` | Linux'ta `fallocate` ile ayrılmış (yazılmamış kapsamlı) ext4 dosyası sıfır okunur ve silinince blokları bırakılır; FAT32 art arda ayrılıp yeniden bağlanır; sonra `e2fsck` ve `fsck.fat` |
-| `tests/cekirdek/14_uppix_araclar.upp` | `hexdump`/`hd` biçimleri; tuşları seri porttan gelen `nano` (yazma, kes/yapıştır, arama, kaydetmeyi sorma) ve `vi` (ekleme, `yy p`, `dd`, `:%s`, `:q`'nun reddi, `:wq`) oturumları |
-| `tests/cekirdek/12_uppix_snake.upp` | `snake -o -n 200` otopilotu beklemeden oynatır; rekor dosyası, boru/yönlendirmede reddetme ve seçenek hataları |
-| `tests/cekirdek/11_uppix_limine.upp` | `uppix.img`'i üretir ve Limine ile 64-bit açar; `/boot` ve kökü yazar, sonra iki bölümü `e2fsck`, `fsck.fat` ve `mtype` ile denetler |
+| `tests/cekirdek/01_uppix.upp` | Disksiz açılış (RAM kök); 25 kabuk komutu |
+| `tests/cekirdek/02_uppix_disk.upp` | İmajları sıfırdan üretir, üç dosya sistemine yazar, sonra Linux araçlarıyla denetler: `e2fsck -fn`, `debugfs`, `fsck.fat`, `mtype`, `fsck.exfat` |
+| `tests/cekirdek/03_uppix_kalici.upp` | Aynı imajlarla ikinci açılış: yazılanlar yerinde mi |
+| `tests/cekirdek/06_uppix_kullanici.upp` | Ring 3: argv/çıkış kodu, `sctest`, `sctest2`, glibc ile derlenmiş `gmerhaba`, terminal ioctl'u, boru, SIGSEGV, zaman dilimiyle kesilen döngü ve `kill`; üç programın çıktısı gerçek Linux'takiyle `diff` ile karşılaştırılır, ext4 kök sonra `e2fsck` ile denetlenir |
+| `tests/cekirdek/08_uppix_disk_kaynak.upp` | Linux'ta `fallocate` ile ayrılmış (yazılmamış kapsamlı) ext4 dosyası sıfır okunur ve silinince blokları bırakılır; FAT32 art arda ayrılıp yeniden bağlanır; sonra `e2fsck` ve `fsck.fat` |
+| `tests/cekirdek/07_uppix_araclar.upp` | `hexdump`/`hd` biçimleri; tuşları seri porttan gelen `nano` (yazma, kes/yapıştır, arama, kaydetmeyi sorma) ve `vi` (ekleme, `yy p`, `dd`, `:%s`, `:q`'nun reddi, `:wq`) oturumları |
+| `tests/cekirdek/05_uppix_snake.upp` | `snake -o -n 200` otopilotu beklemeden oynatır; rekor dosyası, boru/yönlendirmede reddetme ve seçenek hataları |
+| `tests/cekirdek/04_uppix_limine.upp` | `uppix.img`'i üretir ve Limine ile 64-bit açar; `/boot` ve kökü yazar, sonra iki bölümü `e2fsck`, `fsck.fat` ve `mtype` ile denetler |
 
 ## Sınırlar ve sıradakiler
 
