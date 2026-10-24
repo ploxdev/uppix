@@ -17,3 +17,6 @@ tests/_cikti/
 # Python
 __pycache__/
 *.py[cod]
+
+# Yapay zekâ ajanları için yerel notlar (şimdilik depoya girmiyor)
+agents/

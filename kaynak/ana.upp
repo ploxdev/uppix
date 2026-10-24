@@ -1,5 +1,5 @@
 // Uppix giriş noktası: uppc derle (upp.proje) ya da
-//     uppc src/os/kaynak/ana.upp --hedef cekirdek
+//     uppc kaynak/ana.upp --hedef cekirdek --onyukleyici limine
 kullan "uppix.upp";
 
 fonk ana() -> sayi {
