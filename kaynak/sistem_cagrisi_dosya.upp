@@ -1,8 +1,8 @@
 // Uppix — dosya sistemi ve tanımlayıcı sistem çağrıları (Linux x86_64).
 // pread/pwrite, readv/writev, dup/dup2/dup3, fcntl, getdents64, access/faccessat,
 // getcwd/chdir/fchdir, mkdir(at), unlink/rmdir/unlinkat, rename(at),
-// readlink(at). Göreli yollar sürecin çalışma dizinine göre çözülür.
-// Bilinen fark: dup'lanan tanımlayıcılar ofseti paylaşmaz (kopyası alınır).
+// readlink(at), pipe/pipe2. Göreli yollar sürecin çalışma dizinine göre çözülür.
+// Bilinen fark: dup'lanan (ve fork'ta kopyalanan) tanımlayıcılar ofseti paylaşmaz.
 
 sabit sayi F_DUPFD = 0;
 sabit sayi F_GETFD = 1;
@@ -14,6 +14,8 @@ sabit sayi O_NOCTTY = 256;
 sabit sayi O_NONBLOCK = 2048;
 sabit sayi O_LARGEFILE = 32768;
 sabit sayi O_CLOEXEC = 524288;
+sabit sayi O_DIRECT = 16384;
+sabit sayi BORU_BOLUNMEZ = 4096;   // PIPE_BUF
 
 // ---- pread64 / pwrite64: konumu değiştirmeden ofsetten okuma/yazma ----
 fonk sc_pread(sayi s, sayi fd, sayi buf, sayi n, sayi ofs, mantik yaz) -> sayi {
@@ -70,10 +72,7 @@ fonk fd_kopyala(sayi s, sayi eski, sayi yeni, mantik cloexec) -> bos {
     sayi b = fd_yer(s, yeni);
     sayi bayrak = g_fd_bayrak[a] - (g_fd_bayrak[a] & O_CLOEXEC);
     eger (cloexec) { bayrak += O_CLOEXEC; }
-    g_fd_tur.yaz(b, g_fd_tur[a]);
-    g_fd_no.yaz(b, g_fd_no[a]);
-    g_fd_konum.yaz(b, g_fd_konum[a]);
-    g_fd_bayrak.yaz(b, bayrak);
+    fd_ata(b, g_fd_tur[a], g_fd_no[a], g_fd_konum[a], bayrak);
 }
 
 // dup3_bayrak: 0 dup/dup2; dup3 için 1 + bayrak (0 ya da O_CLOEXEC)
@@ -126,6 +125,8 @@ fonk sc_fcntl(sayi s, sayi fd, sayi komut, sayi arg) -> sayi {
     eger (komut == F_GETFL) {
         // açılışta tüketilen bayraklar görünmez; 64 bitte O_LARGEFILE hep açıktır
         sayi tuketilen = O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC;
+        // borular open ile açılmadığından O_LARGEFILE taşımaz
+        eger (fd_boru_mu(g_fd_tur[y])) { don bayrak - (bayrak & tuketilen); }
         don (bayrak - (bayrak & tuketilen)) | O_LARGEFILE;
     }
     eger (komut == F_SETFL) {
@@ -135,6 +136,96 @@ fonk sc_fcntl(sayi s, sayi fd, sayi komut, sayi arg) -> sayi {
         don 0;
     }
     don -EINVAL;
+}
+
+// ---- pipe / pipe2 ----
+fonk fd_boru_mu(sayi tur) -> mantik => tur == FD_BORU_OKU || tur == FD_BORU_YAZ;
+
+// pipe2(fds, bayrak): O_CLOEXEC, O_NONBLOCK (O_DIRECT kabul edilir, paket kipi yok).
+fonk sc_pipe2(sayi s, sayi adres, sayi bayrak) -> sayi {
+    eger ((bayrak & (0xFFFFFFFF - O_CLOEXEC - O_NONBLOCK - O_DIRECT)) != 0) { don -EINVAL; }
+    sayi ek = bayrak & (O_CLOEXEC | O_NONBLOCK);
+    sayi a = fd_ayir(s);
+    eger (a < 0) { don -EMFILE; }
+    sayi b = boru_yeni();
+    fd_kur(s, a, FD_BORU_OKU, b, ek);
+    sayi c = fd_ayir(s);
+    eger (c < 0) {
+        fd_kur(s, a, FD_KAPALI, -1, 0);
+        don -EMFILE;
+    }
+    fd_kur(s, c, FD_BORU_YAZ, b, 1 | ek);
+    sayi t = upp.tampon.yeni(8);
+    upp.tampon.yaz32(t, 0, a);
+    upp.tampon.yaz32(t, 4, c);
+    eger (sc_yapi_ver(s, adres, t, 8) < 0) {
+        fd_kur(s, a, FD_KAPALI, -1, 0);
+        fd_kur(s, c, FD_KAPALI, -1, 0);
+        don -EFAULT;
+    }
+    don 0;
+}
+
+// Okuma: veri gelene ya da bütün yazıcılar kapanana (EOF) dek bekler.
+fonk boru_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi b = g_fd_no[y];
+    iken (g_boru[b].dolu == 0) {
+        eger (g_boru[b].yazici <= 0) { don 0; }
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi k = upp.min(n, g_boru[b].dolu);
+    sayi bas = g_boru[b].bas;
+    sayi ilk = upp.min(k, BORU_BOY - bas);
+    sayi ka = g_surec[s].ka;
+    eger (!upp.cekirdek.kullanici_yaz(ka, buf, g_boru[b].tampon, bas, ilk)) { don -EFAULT; }
+    eger (k > ilk && !upp.cekirdek.kullanici_yaz(ka, buf + ilk, g_boru[b].tampon, 0, k - ilk)) { don -EFAULT; }
+    g_boru[b].bas = (bas + k) % BORU_BOY;
+    g_boru[b].dolu -= k;
+    don k;
+}
+
+// Yazma: okuyucu yoksa SIGPIPE (varsayılan eylem süreci bitirir) ve EPIPE. Dolu
+// boruda yer açılana dek beklenir; PIPE_BUF'a (4096) kadarki yazma bölünmez.
+fonk boru_yaz(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi b = g_fd_no[y];
+    sayi yazilan = 0;
+    iken (yazilan < n) {
+        eger (g_boru[b].okuyucu <= 0) {
+            sinyal_gonder(s, s, SIGPIPE);
+            eger (yazilan > 0) { don yazilan; }
+            don -EPIPE;
+        }
+        sayi bos_yer = BORU_BOY - g_boru[b].dolu;
+        sayi gereken = 1;
+        eger (yazilan == 0 && n <= BORU_BOLUNMEZ) { gereken = n; }
+        eger (bos_yer < gereken) {
+            eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) {
+                eger (yazilan > 0) { don yazilan; }
+                don -EAGAIN;
+            }
+            sayi r = sc_bekle(s);
+            eger (r < 0) {
+                eger (yazilan > 0) { don yazilan; }
+                don r;
+            }
+            devam;
+        }
+        sayi k = upp.min(bos_yer, n - yazilan);
+        sayi kuyruk = (g_boru[b].bas + g_boru[b].dolu) % BORU_BOY;
+        sayi ilk = upp.min(k, BORU_BOY - kuyruk);
+        sayi ka = g_surec[s].ka;
+        mantik ok = upp.cekirdek.kullanici_oku(ka, buf + yazilan, g_boru[b].tampon, kuyruk, ilk);
+        eger (ok && k > ilk) { ok = upp.cekirdek.kullanici_oku(ka, buf + yazilan + ilk, g_boru[b].tampon, 0, k - ilk); }
+        eger (!ok) {
+            eger (yazilan > 0) { don yazilan; }
+            don -EFAULT;
+        }
+        g_boru[b].dolu += k;
+        yazilan += k;
+    }
+    don yazilan;
 }
 
 // ---- getdents64: struct linux_dirent64 { u64 ino; s64 off; u16 reclen; u8 type; char name[]; } ----

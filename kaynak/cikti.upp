@@ -6,8 +6,24 @@ liste[metin] g_yakala;
 liste[sayi] g_yakala_gorev;
 mantik g_hata_sustur = yanlis;
 
+// fork'un çocuğu ebeveyninin çıktısını paylaşır: çocuk görevi → ebeveynin görevi.
+harita[sayi, sayi] g_yakala_vekil;
+
+fonk yakala_vekil_koy(sayi gorev, sayi ebeveyn) -> bos {
+    g_yakala_vekil.koy(gorev, ebeveyn);
+}
+
+fonk yakala_vekil_sil(sayi gorev) -> bos {
+    eger (g_yakala_vekil.var_mi(gorev)) { g_yakala_vekil.sil(gorev); }
+}
+
 fonk yakala_yer() -> sayi {
     sayi g = upp.cekirdek.gorev_kimlik();
+    sayi adim = 0;
+    iken (g_yakala_vekil.var_mi(g) && adim < 32) {
+        g = g_yakala_vekil.al(g);
+        adim += 1;
+    }
     sayi i = g_yakala.uzunluk() - 1;
     iken (i >= 0) {
         eger (g_yakala_gorev[i] == g) { don i; }

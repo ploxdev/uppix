@@ -2,8 +2,14 @@
 // Çekirdek (runtime) adres alanını, ring 3'e girişi, sistem çağrısı girişini
 // ve kullanıcı belleğine denetimli erişimi sağlar (mekanizma). Süreçlerin
 // politikası burada: süreç tablosu, dosya tanımlayıcıları, ELF yükleme, ilk
-// yığın (argv, envp, auxv), brk ve mmap yerleşimi. Sistem çağrıları
-// sistem_cagrisi.upp'tadır ve Linux x86_64 ABI'siyle birebir uyumludur.
+// yığın (argv, envp, auxv), brk ve mmap yerleşimi, borular, fork'un çocuğu,
+// çıkış/zombi/evlat edinme ve sinyallerin süreçlere etkisi. Sistem çağrıları
+// sistem_cagrisi*.upp'tadır ve Linux x86_64 ABI'siyle birebir uyumludur.
+//
+// Süreçler: kabuğun çalıştırdığı süreç kabuğun görevinde (ön planda 1) koşar,
+// ebeveyni 1'dir (kabuk, init gibi: çocuklarını kendisi toplar). fork'un her çocuğu
+// kendi çekirdek görevinde koşar. Biten süreç ebeveyni yaşıyorsa wait4 ile
+// toplanana dek zombi kalır; ebeveyni bitenin çocukları kabuğa (1) geçer.
 //
 // Bellek düzeni (Linux'taki gibi alt yarı):
 //   0x10000 altı               eşlenmez (boş gösterici)
@@ -27,6 +33,8 @@ sabit sayi FD_DOSYA = 3;
 sabit sayi FD_DIZIN = 4;
 sabit sayi FD_NULL = 5;
 sabit sayi FD_FB = 6;        // /dev/fb0
+sabit sayi FD_BORU_OKU = 7;  // borunun okuma ucu (g_fd_no: g_boru yuvası)
+sabit sayi FD_BORU_YAZ = 8;  // borunun yazma ucu
 
 sinif Surec {
     sayi pid;          // 0: boş yuva
@@ -46,6 +54,14 @@ sinif Surec {
     metin yol;         // çalıştırılabilir dosyanın yolu (/proc/self/exe)
     sayi umask;        // dosya oluşturma maskesi (varsayılan 022)
     sayi sig_maske;    // engellenen sinyaller (rt_sigprocmask)
+    sayi ebeveyn;      // ebeveynin PID'i (1: kabuk)
+    sayi pgid;         // süreç grubu (kabuğun çalıştırdığı süreçte kendi PID'i)
+    mantik zombi;      // bitti; ebeveyni henüz wait4 ile toplamadı
+    sayi durum_kodu;   // zombinin wait durumu (Linux kodlaması)
+    sayi sinyal;       // süreci bitiren ya da bitirecek sinyal (0: yok)
+    mantik bekleyen;   // sinyal kabuğun görevindeki sürece verildi: sıradaki sistem çağrısında biter
+    mantik catal;      // fork ile doğdu, kendi görevinde koşuyor
+    sayi cerceve;      // çocuğun başlangıç yazmaçları (tampon); -1: başladı ya da yok
 }
 
 liste[Surec] g_surec;
@@ -91,13 +107,63 @@ fonk fd_gecerli(sayi s, sayi fd) -> mantik {
     don g_fd_tur[fd_yer(s, fd)] != FD_KAPALI;
 }
 
-fonk fd_kur(sayi s, sayi fd, sayi tur, sayi no, sayi bayrak) -> bos {
-    sayi y = fd_yer(s, fd);
+// ---- borular ----
+// 64 KiB'lık halka tampon. Okuyucu ve yazıcı sayaçları tanımlayıcılarla (pipe, dup,
+// fork, close, execve'de O_CLOEXEC, süreç sonu) birlikte tutulur; ikisi de sıfıra
+// inince boru biter.
+sabit sayi BORU_BOY = 65536;
+
+sinif Boru {
+    sayi tampon;
+    sayi bas;
+    sayi dolu;
+    sayi okuyucu;
+    sayi yazici;
+    mantik etkin;
+}
+
+liste[Boru] g_boru;
+
+fonk boru_yeni() -> sayi {
+    Boru b;
+    b.tampon = upp.tampon.yeni(BORU_BOY);
+    b.etkin = dogru;
+    her (sayi i in 0..g_boru.uzunluk()) {
+        eger (!g_boru[i].etkin) {
+            g_boru.yaz(i, b);
+            don i;
+        }
+    }
+    g_boru.ekle(b);
+    don g_boru.uzunluk() - 1;
+}
+
+fonk boru_al(sayi tur, sayi no) -> bos {
+    eger (tur == FD_BORU_OKU) { g_boru[no].okuyucu += 1; }
+    eger (tur == FD_BORU_YAZ) { g_boru[no].yazici += 1; }
+}
+
+fonk boru_birak(sayi tur, sayi no) -> bos {
+    eger (tur != FD_BORU_OKU && tur != FD_BORU_YAZ) { don; }
+    eger (tur == FD_BORU_OKU) { g_boru[no].okuyucu -= 1; } yoksa { g_boru[no].yazici -= 1; }
+    eger (g_boru[no].okuyucu <= 0 && g_boru[no].yazici <= 0 && g_boru[no].etkin) {
+        upp.tampon.birak(g_boru[no].tampon);
+        g_boru[no].etkin = yanlis;
+    }
+}
+
+// Tanımlayıcı yuvasını yazar; eski ucun sayacı düşer, yeninin artar (önce artar:
+// aynı boruya yeniden atamada sayaç sıfıra inip boru bitmesin).
+fonk fd_ata(sayi y, sayi tur, sayi no, sayi konum, sayi bayrak) -> bos {
+    boru_al(tur, no);
+    boru_birak(g_fd_tur[y], g_fd_no[y]);
     g_fd_tur.yaz(y, tur);
     g_fd_no.yaz(y, no);
-    g_fd_konum.yaz(y, 0);
+    g_fd_konum.yaz(y, konum);
     g_fd_bayrak.yaz(y, bayrak);
 }
+
+fonk fd_kur(sayi s, sayi fd, sayi tur, sayi no, sayi bayrak) -> bos => fd_ata(fd_yer(s, fd), tur, no, 0, bayrak);
 
 // En küçük boş tanımlayıcı; yoksa -1 (EMFILE).
 fonk fd_ayir(sayi s) -> sayi {
@@ -107,15 +173,30 @@ fonk fd_ayir(sayi s) -> sayi {
     don -1;
 }
 
-// Yeni süreç yuvası: stdin kabuktan girdi varsa ondan, yoksa terminalden.
-fonk surec_yeni(metin ad, metin girdi) -> sayi {
-    sayi s = -1;
+// Boş süreç yuvası; yoksa tanımlayıcı, sinyal ve sınır tablolarıyla birlikte eklenir.
+fonk surec_yuva_ayir(Surec y) -> sayi {
     her (sayi i in 0..g_surec.uzunluk()) {
         eger (g_surec[i].pid == 0) {
-            s = i;
-            dur;
+            g_surec.yaz(i, y);
+            her (sayi fd in 0..FD_MAX) { fd_kur(i, fd, FD_KAPALI, -1, 0); }
+            don i;
         }
     }
+    sayi s = g_surec.uzunluk();
+    g_surec.ekle(y);
+    her (sayi i in 0..FD_MAX) {
+        g_fd_tur.ekle(FD_KAPALI);
+        g_fd_no.ekle(-1);
+        g_fd_konum.ekle(0);
+        g_fd_bayrak.ekle(0);
+    }
+    her (sayi i in 0..64) { g_sig_eylem.ekle(""); }
+    her (sayi i in 0..RLIM_SAYI * 2) { g_rlim.ekle(0); }
+    don s;
+}
+
+// Yeni süreç yuvası (kabuktan): stdin kabuktan girdi varsa ondan, yoksa terminalden.
+fonk surec_yeni(metin ad, metin girdi) -> sayi {
     Surec y;
     y.pid = g_sonraki_pid;
     g_sonraki_pid += 1;
@@ -136,21 +217,10 @@ fonk surec_yeni(metin ad, metin girdi) -> sayi {
     y.yol = "";
     y.umask = 18;
     y.sig_maske = 0;
-    eger (s < 0) {
-        s = g_surec.uzunluk();
-        g_surec.ekle(y);
-        her (sayi i in 0..FD_MAX) {
-            g_fd_tur.ekle(FD_KAPALI);
-            g_fd_no.ekle(-1);
-            g_fd_konum.ekle(0);
-            g_fd_bayrak.ekle(0);
-        }
-        her (sayi i in 0..64) { g_sig_eylem.ekle(""); }
-        her (sayi i in 0..RLIM_SAYI * 2) { g_rlim.ekle(0); }
-    } yoksa {
-        g_surec.yaz(s, y);
-        her (sayi fd in 0..FD_MAX) { fd_kur(s, fd, FD_KAPALI, -1, 0); }
-    }
+    y.ebeveyn = 1;
+    y.pgid = y.pid;
+    y.cerceve = -1;
+    sayi s = surec_yuva_ayir(y);
     her (sayi i in 0..64) { g_sig_eylem.yaz(s * 64 + i, ""); }
     her (sayi k in 0..RLIM_SAYI) {
         g_rlim.yaz((s * RLIM_SAYI + k) * 2, rlim_varsayilan(k, yanlis));
@@ -164,24 +234,147 @@ fonk surec_yeni(metin ad, metin girdi) -> sayi {
     don s;
 }
 
-// Yuvayı boşaltır. alan_sil: adres alanını da sil (görev öldürüldüyse çekirdek
-// zaten silmiştir).
-fonk surec_bitir(sayi s, mantik alan_sil) -> bos {
-    eger (s < 0 || g_surec[s].pid == 0) { don; }
+// Yaşayan (zombi olmayan) sürecin yuvası; yoksa -1.
+fonk surec_bul(sayi pid) -> sayi {
+    her (sayi i in 0..g_surec.uzunluk()) {
+        eger (g_surec[i].pid == pid && pid != 0 && !g_surec[i].zombi) { don i; }
+    }
+    don -1;
+}
+
+fonk surec_yuva_bosalt(sayi s) -> bos {
+    g_surec[s].pid = 0;
+    g_surec[s].zombi = yanlis;
+}
+
+// Sürecin belleği, tanımlayıcıları ve görev kaydı bırakılır. alan_sil: adres alanını
+// da sil (görev öldürüldüyse çekirdek zaten silmiştir).
+fonk surec_kaynak_birak(sayi s, mantik alan_sil) -> bos {
     // Paylaşımlı dosya eşlemeleri dosyaya geri yazılır; alan silinmişse okunamaz.
     esl_surec_bitti(s, alan_sil && g_surec[s].ka != 0);
     eger (alan_sil && g_surec[s].ka != 0) { upp.cekirdek.kullanici_alan_sil(g_surec[s].ka); }
     her (sayi fd in 0..FD_MAX) { fd_kur(s, fd, FD_KAPALI, -1, 0); }
-    g_surec_gorev.sil(g_surec[s].gorev);
-    g_surec[s].pid = 0;
+    eger (g_surec_gorev.var_mi(g_surec[s].gorev) && g_surec_gorev.al(g_surec[s].gorev) == s) {
+        g_surec_gorev.sil(g_surec[s].gorev);
+    }
+    eger (g_surec[s].catal) { yakala_vekil_sil(g_surec[s].gorev); }
+    eger (g_surec[s].cerceve >= 0) {
+        upp.tampon.birak(g_surec[s].cerceve);
+        g_surec[s].cerceve = -1;
+    }
     g_surec[s].ka = 0;
     g_surec[s].girdi = "";
     g_surec[s].satir_artik = "";
 }
 
-// kill: öldürülen görevin süreci varsa yuvası boşalır.
+// Süreç bitti (wdurum: Linux wait durumu). Çocukları kabuğa (1) geçer, zombi çocukları
+// toplanır; ebeveyni yaşıyorsa wait4'e dek zombi kalır, yoksa yuvası boşalır.
+fonk surec_cik(sayi s, sayi wdurum, mantik alan_sil) -> bos {
+    eger (s < 0 || g_surec[s].pid == 0 || g_surec[s].zombi) { don; }
+    sayi pid = g_surec[s].pid;
+    surec_kaynak_birak(s, alan_sil);
+    her (sayi i in 0..g_surec.uzunluk()) {
+        eger (i == s || g_surec[i].pid == 0 || g_surec[i].ebeveyn != pid) { devam; }
+        eger (g_surec[i].zombi) { surec_yuva_bosalt(i); } yoksa { g_surec[i].ebeveyn = 1; }
+    }
+    eger (surec_bul(g_surec[s].ebeveyn) >= 0) {
+        g_surec[s].zombi = dogru;
+        g_surec[s].durum_kodu = wdurum;
+    } yoksa {
+        surec_yuva_bosalt(s);
+    }
+}
+
+// wait durumu: sinyalle bitişte sinyal numarası, çıkışta (kod & 0xff) << 8.
+fonk surec_durum(sayi s, sayi kod, metin neden) -> sayi {
+    eger (g_surec[s].sinyal > 0) { don g_surec[s].sinyal; }
+    // çekirdeğin bitirdiği süreç (SIGSEGV, Ctrl-C): kod 128 + sinyal
+    eger (neden != "" && kod > 128) { don kod - 128; }
+    don (kod & 255) * 256;
+}
+
+// Kabuktan kill: öldürülen görevin süreci varsa SIGKILL ile bitmiş sayılır.
 fonk surec_gorev_oldu(sayi gorev) -> bos {
-    eger (g_surec_gorev.var_mi(gorev)) { surec_bitir(g_surec_gorev.al(gorev), yanlis); }
+    eger (!g_surec_gorev.var_mi(gorev)) { don; }
+    sayi s = g_surec_gorev.al(gorev);
+    g_surec[s].sinyal = 9;
+    surec_cik(s, 9, yanlis);
+}
+
+// ---- fork ----
+
+// s'nin kopyası (adres alanı ka): tanımlayıcılar (boru sayaçlarıyla), çalışma dizini,
+// umask, sinyal eylemleri ve maskesi, kaynak sınırları ve paylaşımlı eşleme kayıtları.
+fonk surec_catal(sayi s, sayi ka) -> sayi {
+    Surec y = g_surec[s];
+    y.pid = g_sonraki_pid;
+    g_sonraki_pid += 1;
+    y.ka = ka;
+    y.gorev = -1;
+    y.ebeveyn = g_surec[s].pid;
+    y.zombi = yanlis;
+    y.durum_kodu = 0;
+    y.sinyal = 0;
+    y.bekleyen = yanlis;
+    y.catal = dogru;
+    y.cerceve = -1;
+    y.satir_artik = "";
+    sayi c = surec_yuva_ayir(y);
+    her (sayi fd in 0..FD_MAX) {
+        sayi a = fd_yer(s, fd);
+        fd_ata(fd_yer(c, fd), g_fd_tur[a], g_fd_no[a], g_fd_konum[a], g_fd_bayrak[a]);
+    }
+    her (sayi i in 0..64) { g_sig_eylem.yaz(c * 64 + i, g_sig_eylem[s * 64 + i]); }
+    her (sayi i in 0..RLIM_SAYI * 2) { g_rlim.yaz(c * RLIM_SAYI * 2 + i, g_rlim[s * RLIM_SAYI * 2 + i]); }
+    esl_kopyala(s, c);
+    don c;
+}
+
+// fork'un çocuğu bu görevde, ebeveynin sistem çağrısı anındaki yazmaçlarıyla koşar.
+fonk surec_cocuk_gorevi(sayi c) -> bos {
+    sayi t = g_surec[c].cerceve;
+    g_surec[c].cerceve = -1;
+    sayi kod = upp.cekirdek.kullanici_cerceve_calistir(g_surec[c].ka, t);
+    upp.tampon.birak(t);
+    metin neden = upp.cekirdek.kullanici_son_hata();
+    eger (neden != "") { klog_sessiz("süreç {g_surec[c].pid}: {neden}"); }
+    surec_cik(c, surec_durum(c, kod, neden), dogru);
+}
+
+// ---- sinyaller ----
+
+// Sinyal yok sayılıyor mu: SIG_IGN ya da varsayılan eylemi yok saymak olanlar
+// (SIGCHLD, SIGURG, SIGWINCH, SIGCONT). İşleyiciler çağrılmaz: yakalanan sinyal de
+// varsayılan eylemle (sonlandırma) sonuçlanır.
+fonk sinyal_yok_sayilir(sayi s, sayi sig) -> mantik {
+    eger (sig == 9 || sig == 19) { don yanlis; }
+    metin e = g_sig_eylem[s * 64 + sig - 1];
+    eger (e != "") {
+        sayi t = upp.tampon.yeni(32);
+        upp.tampon.metin_yaz(t, 0, e);
+        sayi isleyici = upp.tampon.oku64(t, 0);
+        upp.tampon.birak(t);
+        eger (isleyici == 1) { don dogru; }
+    }
+    don sig == 17 || sig == 23 || sig == 28 || sig == 18;
+}
+
+// s'den t'ye sinyal. Kendisine: sistem çağrısı dönerken biter. Kendi görevindeki
+// (fork'un) çocuk: görevi hemen sonlanır. Kabuğun görevindeki süreç: sinyal bekler,
+// sıradaki sistem çağrısında (ya da beklemedeyken) biter.
+fonk sinyal_gonder(sayi s, sayi t, sayi sig) -> bos {
+    eger (g_surec[t].pid == 0 || g_surec[t].zombi || sinyal_yok_sayilir(t, sig)) { don; }
+    g_surec[t].sinyal = sig;
+    eger (t == s) {
+        upp.cekirdek.kullanici_cikis_iste(128 + sig);
+        don;
+    }
+    eger (g_surec[t].catal && upp.cekirdek.gorev_oldur(g_surec[t].gorev)) {
+        // Başlamış sürecin adres alanını çekirdek bıraktı; başlamamışınki bizde.
+        surec_cik(t, sig, g_surec[t].cerceve >= 0);
+        don;
+    }
+    g_surec[t].bekleyen = dogru;
 }
 
 // ---- ELF64 yükleyici ----
@@ -344,6 +537,7 @@ fonk elf_calistir(sayi no, liste[metin] a, metin girdi) -> sayi {
         don 126;
     }
     sayi s = surec_yeni(yol_ad(fs_yol(no)), girdi);
+    sayi pid = g_surec[s].pid;
     g_surec[s].yol = fs_yol(no);
     metin veri = fs_oku(no);
     sayi n = bayt_say(veri);
@@ -356,7 +550,7 @@ fonk elf_calistir(sayi no, liste[metin] a, metin girdi) -> sayi {
     }
     eger (h != "") {
         hata_bildir("uppsh: {ad}: {h}");
-        surec_bitir(s, dogru);
+        surec_cik(s, 126 * 256, dogru);
         don 126;
     }
     klog_sessiz("süreç {g_surec[s].pid}: {g_surec[s].ad} (giriş {onaltilik(g_surec[s].giris)})");
@@ -364,7 +558,8 @@ fonk elf_calistir(sayi no, liste[metin] a, metin girdi) -> sayi {
     upp.cekirdek.kullanici_on_plan(upp.cekirdek.gorev_kimlik() == 1);
     sayi kod = upp.cekirdek.kullanici_calistir(g_surec[s].ka, g_surec[s].giris, g_surec[s].yigin);
     metin neden = upp.cekirdek.kullanici_son_hata();
-    surec_bitir(s, dogru);
+    // Süreç bu görevde koştu; yuvası değişmedi (s), PID'i hâlâ onun.
+    eger (g_surec[s].pid == pid) { surec_cik(s, surec_durum(s, kod, neden), dogru); }
     eger (neden == "^C") {
         terminale_yaz("^C\n");
     } yoksa eger (neden != "") {

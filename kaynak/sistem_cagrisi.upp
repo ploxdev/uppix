@@ -11,6 +11,8 @@ sabit sayi ENOENT = 2;
 sabit sayi ESRCH = 3;
 sabit sayi EINTR = 4;
 sabit sayi EIO = 5;
+sabit sayi E2BIG = 7;
+sabit sayi ENOEXEC = 8;
 sabit sayi EBADF = 9;
 sabit sayi ECHILD = 10;
 sabit sayi EAGAIN = 11;
@@ -27,10 +29,12 @@ sabit sayi EMFILE = 24;
 sabit sayi ENOTTY = 25;
 sabit sayi ESPIPE = 29;
 sabit sayi EROFS = 30;
+sabit sayi EPIPE = 32;
 sabit sayi ERANGE = 34;
 sabit sayi ENAMETOOLONG = 36;
 sabit sayi ENOSYS = 38;
 sabit sayi ENOTEMPTY = 39;
+sabit sayi ELOOP = 40;
 sabit sayi EOPNOTSUPP = 95;
 sabit sayi ETIMEDOUT = 110;
 
@@ -55,6 +59,10 @@ sabit sayi TIOCGWINSZ = 0x5413;
 sabit sayi FBIOGET_VSCREENINFO = 0x4600;
 sabit sayi FBIOGET_FSCREENINFO = 0x4602;
 
+sabit sayi SIGINT = 2;
+sabit sayi SIGKILL = 9;
+sabit sayi SIGPIPE = 13;
+
 harita[sayi, mantik] g_sc_bildirildi; // desteklenmeyen çağrı günlüğe bir kez yazılır
 
 fonk sistem_cagrilari_kur() -> bos {
@@ -70,6 +78,8 @@ fonk sistem_cagrilari_kur() -> bos {
 fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a6) -> sayi {
     sayi s = surec_simdi();
     eger (s < 0) { don -ENOSYS; }
+    // kabuğun görevindeki sürece başka bir süreç sinyal göndermiş: süreç burada biter
+    eger (g_surec[s].bekleyen) { don sc_bekleyen_bitir(s); }
     // G/Ç
     eger (no == 0) { don sc_read(s, a1, a2, a3); }
     eger (no == 1) { don sc_write(s, a1, a2, a3); }
@@ -105,6 +115,8 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (no == 264 || no == 316) { don sc_rename(s, a1, a2, a3, a4); }
     eger (no == 89) { don sc_readlink(s, AT_FDCWD, a1, a2, a3); }
     eger (no == 267) { don sc_readlink(s, a1, a2, a3, a4); }
+    eger (no == 22) { don sc_pipe2(s, a1, 0); }
+    eger (no == 293) { don sc_pipe2(s, a1, a2); }
     // bellek
     eger (no == 9) { don sc_mmap(s, a1, a2, a3, a4, a5, a6); }
     eger (no == 10) { don sc_mprotect(s, a1, a2, a3); }
@@ -117,8 +129,13 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
         upp.cekirdek.kullanici_cikis_iste(a1 % 256);
         don 0;
     }
+    eger (no == 57 || no == 58) { don sc_fork(s, 0, 0, 0, 0, 0); } // fork, vfork (fork gibi)
+    eger (no == 56) { don sc_clone(s, a1, a2, a3, a4, a5); }
+    eger (no == 59) { don sc_execve(s, a1, a2, a3); }
+    eger (no == 61) { don sc_wait4(s, isaretli32(a1), a2, a3, a4); }
+    eger (no == 247) { don sc_waitid(s, a1, isaretli32(a2), a3, a4, a5); }
     eger (no == 39 || no == 186) { don g_surec[s].pid; }      // getpid, gettid
-    eger (no == 110) { don 1; }                               // getppid: kabuk
+    eger (no == 110) { don g_surec[s].ebeveyn; }              // getppid
     eger (no == 102 || no == 104 || no == 107 || no == 108) { don 0; } // root
     eger (no == 218) { don g_surec[s].pid; }                  // set_tid_address
     eger (no == 273) { don 0; }                               // set_robust_list
@@ -144,14 +161,11 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (no == 28) { don sc_madvise(s, a1, a2, a3); }
     eger (no == 131) { don sc_sigaltstack(s, a1, a2); }
     eger (no == 202) { don sc_futex(s, a1, a2, a3, a4); }
-    eger (no == 62) { don sc_kill(s, a1, a2); }
-    eger (no == 200) { don sc_kill(s, g_surec[s].pid, a2); } // tkill
-    eger (no == 234) {                                        // tgkill
-        eger (a1 != g_surec[s].pid) { don -ESRCH; }
-        don sc_kill(s, a2, a3);
-    }
-    eger (no == 61) { don -ECHILD; }                          // wait4: çocuk yok
-    eger (no == 111 || no == 121 || no == 124) { don g_surec[s].pid; } // getpgrp, getpgid, getsid
+    eger (no == 62) { don sc_kill(s, isaretli32(a1), a2); }
+    eger (no == 200) { don sc_tkill(s, isaretli32(a1), isaretli32(a1), a2); }
+    eger (no == 234) { don sc_tkill(s, isaretli32(a1), isaretli32(a2), a3); }
+    eger (no == 111) { don g_surec[s].pgid; }                 // getpgrp
+    eger (no == 121 || no == 124) { don sc_getpgid(s, isaretli32(a1)); } // getpgid, getsid
     eger (no == 99) { don sc_sysinfo(s, a1); }
     eger (!g_sc_bildirildi.var_mi(no)) {
         g_sc_bildirildi.koy(no, dogru);
@@ -235,11 +249,39 @@ fonk sc_kip(sayi s, sayi kip) -> sayi => (kip & 4095) - (kip & g_surec[s].umask 
 
 fonk sc_on_planda(sayi s) -> mantik => g_surec[s].gorev == 1;
 
-// Ön plandaki süreç Ctrl-C ile SIGINT alır (çıkış 130).
+// int türündeki argüman (pid_t, int): üst 32 bit çağırana göre çöp olabilir.
+fonk isaretli32(sayi v) -> sayi {
+    sayi x = v & 0xFFFFFFFF;
+    eger (x >= 0x80000000) { don x - 0x100000000; }
+    don x;
+}
+
+// Ön plandaki süreç Ctrl-C ile SIGINT alır (çıkış 130); grubundaki süreçler de
+// (fork'un çocukları) sonlanır.
 fonk sc_kesme(sayi s) -> sayi {
+    her (sayi i in 0..g_surec.uzunluk()) {
+        eger (i != s && g_surec[i].pid != 0 && !g_surec[i].zombi && g_surec[i].pgid == g_surec[s].pgid) { sinyal_gonder(s, i, SIGINT); }
+    }
+    g_surec[s].sinyal = SIGINT;
     upp.cekirdek.kullanici_cikis_iste(130);
     terminale_yaz("^C\n");
     don -EINTR;
+}
+
+// Bekleyen sinyal: süreç sistem çağrısı dönerken 128 + sinyal ile biter.
+fonk sc_bekleyen_bitir(sayi s) -> sayi {
+    g_surec[s].bekleyen = yanlis;
+    upp.cekirdek.kullanici_cikis_iste(128 + g_surec[s].sinyal);
+    don -EINTR;
+}
+
+// Engelleyen çağrıların (wait4, boru) bir bekleme adımı: diğer görevlere sıra verir.
+// Dönüş 0: beklemeye devam; < 0: Ctrl-C ya da bekleyen sinyalle kesildi.
+fonk sc_bekle(sayi s) -> sayi {
+    upp.uyut(1);
+    eger (g_surec[s].bekleyen) { don sc_bekleyen_bitir(s); }
+    eger (sc_on_planda(s) && kesme_istendi_mi()) { don sc_kesme(s); }
+    don 0;
 }
 
 // ---- read ----
@@ -282,6 +324,7 @@ fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_DIZIN) { don -EISDIR; }
     eger (tur == FD_FB) { don -EINVAL; }
     eger (g_fd_bayrak[y] % 4 == 1) { don -EBADF; }
+    eger (tur == FD_BORU_OKU) { don boru_oku(s, y, buf, n); }
     eger (tur == FD_TERMINAL) {
         eger (g_surec[s].satir_artik == "") {
             metin satir_m = sc_terminal_satir(s);
@@ -335,6 +378,7 @@ fonk sc_write(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_GIRDI || g_fd_bayrak[y] % 4 == 0) { don -EBADF; }
     eger (n == 0) { don 0; }
     eger (tur == FD_NULL) { don n; }
+    eger (tur == FD_BORU_YAZ) { don boru_yaz(s, y, buf, n); }
     metin veri = sc_oku_metin(s, buf, n);
     eger (veri == yok) { don -EFAULT; }
     eger (tur == FD_TERMINAL) {
@@ -481,7 +525,7 @@ fonk sc_fstat(sayi s, sayi fd, sayi buf) -> sayi {
     eger (tur == FD_DOSYA || tur == FD_DIZIN || tur == FD_NULL || tur == FD_FB) {
         eger (g_fd_no[y] >= 0) { don sc_yapi_ver(s, buf, sc_dugum_stat(g_fd_no[y]), 144); }
     }
-    eger (tur == FD_GIRDI) {
+    eger (tur == FD_GIRDI || fd_boru_mu(tur)) {
         // boru: S_IFIFO | 0600
         don sc_yapi_ver(s, buf, sc_stat_tampon(4096 + 384, 1, 1, 1, 0, simdi()), 144);
     }
@@ -495,7 +539,7 @@ fonk sc_lseek(sayi s, sayi fd, sayi ofs, sayi nereden) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi y = fd_yer(s, fd);
     sayi tur = g_fd_tur[y];
-    eger (tur == FD_TERMINAL || tur == FD_GIRDI) { don -ESPIPE; }
+    eger (tur == FD_TERMINAL || tur == FD_GIRDI || fd_boru_mu(tur)) { don -ESPIPE; }
     eger (tur == FD_NULL || tur == FD_FB) { don 0; }
     sayi yeni = 0;
     eger (nereden == 0) {
@@ -590,6 +634,15 @@ fonk esl_bosalt(sayi s, sayi bas, sayi son, mantik kaldir) -> sayi {
         }
     }
     don bulundu;
+}
+
+// fork: ebeveynin paylaşımlı eşleme kayıtları çocuğa da kopyalanır. Sayfalar çocukta
+// özel kopyadır; her iki süreç de kendi yazdığını msync/munmap/çıkışta geri yazar.
+fonk esl_kopyala(sayi s, sayi c) -> bos {
+    sayi n = g_esl_s.uzunluk();
+    her (sayi i in 0..n) {
+        eger (g_esl_s[i] == s) { esl_ekle(c, g_esl_adres[i], g_esl_boy[i], g_esl_no[i], g_esl_ofs[i]); }
+    }
 }
 
 // Süreç yuvası boşalırken çağrılır. yaz: adres alanı hâlâ geçerli mi (görev

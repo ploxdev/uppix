@@ -1,7 +1,8 @@
 // Uppix — süreç, zaman, TLS ve sinyal sistem çağrıları (Linux x86_64).
 // arch_prctl, uname, clock_gettime/getres, gettimeofday, time, clock_nanosleep,
 // getrandom, mprotect, madvise, rt_sigaction, rt_sigprocmask, sigaltstack,
-// prlimit64/getrlimit/setrlimit, umask, futex, kill/tkill/tgkill, sysinfo.
+// prlimit64/getrlimit/setrlimit, umask, futex, kill/tkill/tgkill, sysinfo,
+// fork/vfork/clone, execve, wait4/waitid, getpgid/getsid.
 // Süreçler tek iş parçacıklıdır; sinyaller teslim edilmez, yalnızca öldürür
 // (eylemler ve maske Linux'taki gibi saklanır ve geri okunur).
 
@@ -294,23 +295,376 @@ fonk sc_sigaltstack(sayi s, sayi yeni, sayi eski) -> sayi {
     don 0;
 }
 
-// kill: yalnızca sürecin kendisi (ve 0: süreç grubu = kendisi) hedeflenebilir.
+// kill: pid > 0 o süreç (zombi de olabilir), 0 kendi süreç grubu, -1 kendisi dışında
+// herkes, < -1 -pid grubu. Yok sayılan sinyal etkisizdir; gerisi süreci bitirir.
 fonk sc_kill(sayi s, sayi pid, sayi sig) -> sayi {
     eger (sig < 0 || sig > 64) { don -EINVAL; }
-    eger (pid != g_surec[s].pid && pid != 0 && pid != -1) { don -ESRCH; }
-    eger (sig == 0) { don 0; }
-    // engellenmiş ya da yok sayılan (SIG_IGN = 1) sinyal etkisizdir
-    metin e = g_sig_eylem[s * 64 + sig - 1];
-    eger (e != "") {
-        sayi t = upp.tampon.yeni(32);
-        upp.tampon.metin_yaz(t, 0, e);
-        sayi isleyici = upp.tampon.oku64(t, 0);
-        upp.tampon.birak(t);
-        eger (isleyici == 1 && sig != 9 && sig != 19) { don 0; }
+    liste[sayi] hedef;
+    her (sayi i in 0..g_surec.uzunluk()) {
+        eger (g_surec[i].pid == 0) { devam; }
+        mantik yasiyor = !g_surec[i].zombi;
+        eger (pid > 0 && g_surec[i].pid == pid) { hedef.ekle(i); }
+        eger (pid == 0 && yasiyor && g_surec[i].pgid == g_surec[s].pgid) { hedef.ekle(i); }
+        eger (pid == -1 && yasiyor && i != s) { hedef.ekle(i); }
+        eger (pid < -1 && yasiyor && g_surec[i].pgid == -pid) { hedef.ekle(i); }
     }
-    // varsayılan eylemi yok sayılan sinyaller: SIGCHLD, SIGURG, SIGWINCH, SIGCONT
-    eger (sig == 17 || sig == 23 || sig == 28 || sig == 18) { don 0; }
-    upp.cekirdek.kullanici_cikis_iste(128 + sig);
+    eger (hedef.uzunluk() == 0) { don -ESRCH; }
+    eger (sig == 0) { don 0; }
+    // kendisine en son: sinyal sistem çağrısı dönerken etkili olur
+    her (oto t in hedef) {
+        eger (t != s) { sinyal_gonder(s, t, sig); }
+    }
+    her (oto t in hedef) {
+        eger (t == s) { sinyal_gonder(s, s, sig); }
+    }
+    don 0;
+}
+
+// tkill/tgkill: süreçler tek iş parçacıklıdır, iş parçacığı kimliği PID'dir.
+fonk sc_tkill(sayi s, sayi tgid, sayi tid, sayi sig) -> sayi {
+    eger (tid <= 0 || tgid <= 0) { don -EINVAL; }
+    eger (tgid != tid) { don -ESRCH; }
+    don sc_kill(s, tid, sig);
+}
+
+fonk sc_getpgid(sayi s, sayi pid) -> sayi {
+    eger (pid == 0) { don g_surec[s].pgid; }
+    eger (pid < 0) { don -ESRCH; }
+    sayi t = surec_bul(pid);
+    eger (t < 0) { don -ESRCH; }
+    don g_surec[t].pgid;
+}
+
+// ---- fork / vfork / clone ----
+sabit sayi CLONE_VM = 0x100;
+sabit sayi CLONE_SIGHAND = 0x800;
+sabit sayi CLONE_VFORK = 0x4000;
+sabit sayi CLONE_THREAD = 0x10000;
+sabit sayi CLONE_SETTLS = 0x80000;
+sabit sayi CLONE_PARENT_SETTID = 0x100000;
+sabit sayi CLONE_CHILD_CLEARTID = 0x200000;
+sabit sayi CLONE_CHILD_SETTID = 0x1000000;
+sabit sayi CERCEVE_BOY = 672;
+
+// Çocuk, ebeveynin bu sistem çağrısındaki yazmaçlarıyla (rax = 0) kendi görevinde
+// başlar. yigin != 0 ise çocuğun rsp'si, CLONE_SETTLS ile FS tabanı değişir.
+fonk sc_fork(sayi s, sayi bayrak, sayi yigin, sayi ebeveyn_tid, sayi cocuk_tid, sayi tls) -> sayi {
+    sayi t = upp.tampon.yeni(CERCEVE_BOY);
+    eger (!upp.cekirdek.kullanici_cerceve_kaydet(t)) {
+        upp.tampon.birak(t);
+        don -EINVAL;
+    }
+    sayi ka = upp.cekirdek.kullanici_alan_kopyala(g_surec[s].ka);
+    eger (ka == 0) {
+        upp.tampon.birak(t);
+        don -ENOMEM;
+    }
+    upp.tampon.yaz64(t, 0, 0);
+    eger (yigin != 0) { upp.tampon.yaz64(t, 15 * 8, yigin); }
+    eger ((bayrak & CLONE_SETTLS) != 0) { upp.tampon.yaz64(t, 16 * 8, tls); }
+    sayi c = surec_catal(s, ka);
+    g_surec[c].cerceve = t;
+    sayi g = upp.cekirdek.gorev_baslat(surec_cocuk_gorevi, c, g_surec[c].ad);
+    eger (g < 0) {
+        // görev tablosu dolu (en çok 32 görev)
+        surec_kaynak_birak(c, dogru);
+        surec_yuva_bosalt(c);
+        don -EAGAIN;
+    }
+    g_surec[c].gorev = g;
+    g_surec_gorev.koy(g, c);
+    yakala_vekil_koy(g, upp.cekirdek.gorev_kimlik());
+    sayi pid = g_surec[c].pid;
+    sayi u = upp.tampon.yeni(4);
+    upp.tampon.yaz32(u, 0, pid);
+    eger ((bayrak & CLONE_PARENT_SETTID) != 0) { upp.cekirdek.kullanici_yaz(g_surec[s].ka, ebeveyn_tid, u, 0, 4); }
+    eger ((bayrak & CLONE_CHILD_SETTID) != 0) { upp.cekirdek.kullanici_yaz(ka, cocuk_tid, u, 0, 4); }
+    upp.tampon.birak(u);
+    don pid;
+}
+
+// clone(bayrak, yigin, ebeveyn_tid, cocuk_tid, tls): yalnızca fork'a denk biçim
+// (glibc fork() böyle çağırır). İş parçacığı (CLONE_VM, CLONE_THREAD) yok.
+fonk sc_clone(sayi s, sayi bayrak, sayi yigin, sayi ebeveyn_tid, sayi cocuk_tid, sayi tls) -> sayi {
+    eger ((bayrak & (CLONE_VM | CLONE_THREAD | CLONE_SIGHAND)) != 0) { don -ENOSYS; }
+    sayi izinli = 255 | CLONE_VFORK | CLONE_SETTLS | CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_CHILD_SETTID;
+    eger ((bayrak & (0xFFFFFFFF - izinli)) != 0 || bayrak < 0) { don -EINVAL; }
+    don sc_fork(s, bayrak, yigin, ebeveyn_tid, cocuk_tid, tls);
+}
+
+// ---- execve ----
+sabit sayi ARG_DIZGI_AZAMI = 131072;  // MAX_ARG_STRLEN (NUL dahil)
+
+// Kullanıcı dizgisi, en çok sinir bayt (NUL dahil). Hatada yok; g_sc_hata -EFAULT
+// (okunamayan adres) ya da -E2BIG (sınırda NUL yok).
+fonk sc_uzun_metin(sayi s, sayi adres, sayi sinir) -> metin {
+    sayi ka = g_surec[s].ka;
+    metin m = upp.cekirdek.kullanici_metin(ka, adres, 4096);
+    eger (m != yok) { don m; }
+    sayi t = upp.tampon.yeni(sinir);
+    sayi n = 0;
+    iken (n < sinir) {
+        // sayfa sayfa: NUL'dan sonraki eşlenmemiş sayfa hata sayılmasın
+        sayi parca = upp.min(SAYFA - (adres + n) % SAYFA, sinir - n);
+        eger (!upp.cekirdek.kullanici_oku(ka, adres + n, t, n, parca)) {
+            upp.tampon.birak(t);
+            g_sc_hata = -EFAULT;
+            don yok;
+        }
+        her (sayi i in n..n + parca) {
+            eger (upp.tampon.oku8(t, i) == 0) {
+                m = upp.tampon.metin(t, 0, i);
+                upp.tampon.birak(t);
+                don m;
+            }
+        }
+        n += parca;
+    }
+    upp.tampon.birak(t);
+    g_sc_hata = -E2BIG;
+    don yok;
+}
+
+// NULL ile biten char* dizisi (argv, envp); adres 0 boş liste. Hatada g_sc_hata < 0.
+fonk sc_metin_dizisi(sayi s, sayi adres) -> liste[metin] {
+    liste[metin] L;
+    g_sc_hata = 0;
+    eger (adres == 0) { don L; }
+    sayi t = upp.tampon.yeni(8);
+    iken (dogru) {
+        eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, adres + L.uzunluk() * 8, t, 0, 8)) {
+            g_sc_hata = -EFAULT;
+            dur;
+        }
+        sayi p = upp.tampon.oku64(t, 0);
+        eger (p == 0) { dur; }
+        metin m = sc_uzun_metin(s, p, ARG_DIZGI_AZAMI);
+        eger (m == yok) { dur; }
+        L.ekle(m);
+    }
+    upp.tampon.birak(t);
+    don L;
+}
+
+// Linux'taki denetim sırası: dosya (ENOENT, EACCES), argv/envp (EFAULT, E2BIG),
+// biçim (ENOEXEC).
+fonk sc_execve(sayi s, sayi yol_adr, sayi argv_adr, sayi envp_adr) -> sayi {
+    metin ham = sc_yol(s, yol_adr);
+    eger (ham == yok) { don -EFAULT; }
+    metin yol = sc_yol_at(s, AT_FDCWD, yol_adr, yanlis);
+    eger (yol == yok) { don g_sc_hata; }
+    sayi no = fs_coz(yol);
+    sayi h = yurut_dosya_denetle(no);
+    eger (h < 0) { don h; }
+    liste[metin] arg = sc_metin_dizisi(s, argv_adr);
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    liste[metin] ortam = sc_metin_dizisi(s, envp_adr);
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    don surec_yurut(s, no, ham, arg, ortam, 0, ham);
+}
+
+// Çalıştırılacak dosya: var olmalı, sıradan dosya ve en az bir x biti (root bile x'siz
+// dosyayı çalıştıramaz).
+fonk yurut_dosya_denetle(sayi no) -> sayi {
+    eger (no < 0) { don -ENOENT; }
+    eger (g_fs[no].tur != D_DOSYA || (g_fs[no].kip & 73) == 0) { don -EACCES; }
+    don 0;
+}
+
+// #! satırı: "#!yorumlayıcı [tek argüman]" (en çok 255 bayt, satır sonuna dek).
+fonk betik_satiri(metin veri) -> metin {
+    sayi t = upp.tampon.yeni(256);
+    sayi n = upp.tampon.metin_yaz(t, 0, upp.metin.kes(veri, 0, 256));
+    sayi son = 2;
+    iken (son < n && son < 256 && upp.tampon.oku8(t, son) != 10) { son += 1; }
+    metin satir_m = upp.tampon.metin(t, 2, son - 2);
+    upp.tampon.birak(t);
+    don upp.metin.kirp(upp.metin.degistir(satir_m, "\t", " "));
+}
+
+// dosya: execve'ye verilen yol (betiğin argv'sinde ve AT_EXECFN'de olduğu gibi); ilk:
+// süreç adı (comm) için ilk yol. Başarıda 0: süreç sistem çağrısı dönerken yeni
+// görüntüden sürer. Hatada mevcut görüntüye dokunulmaz.
+fonk surec_yurut(sayi s, sayi no, metin dosya, liste[metin] arg, liste[metin] ortam, sayi derinlik, metin ilk) -> sayi {
+    metin veri = fs_oku(no);
+    eger (upp.metin.baslar(veri, "#!")) {
+        eger (derinlik >= 4) { don -ELOOP; }
+        metin satir_m = betik_satiri(veri);
+        // /bin altındaki yerleşik komutlar çekirdekte çalışır, süreç görüntüsü değildir
+        eger (satir_m == "" || upp.metin.baslar(satir_m, "/yerlesik/")) { don -ENOEXEC; }
+        metin yorumlayici = satir_m;
+        metin ek = "";
+        sayi bosluk = upp.metin.bul(satir_m, " ");
+        eger (bosluk > 0) {
+            yorumlayici = kes(satir_m, 0, bosluk);
+            ek = upp.metin.kirp(kes_son(satir_m, bosluk + 1));
+        }
+        sayi yno = fs_coz(yorumlayici);
+        sayi h = yurut_dosya_denetle(yno);
+        eger (h < 0) { don h; }
+        liste[metin] yeni_arg;
+        yeni_arg.ekle(yorumlayici);
+        eger (ek != "") { yeni_arg.ekle(ek); }
+        yeni_arg.ekle(dosya);
+        her (sayi i in 1..arg.uzunluk()) { yeni_arg.ekle(arg[i]); }
+        don surec_yurut(s, yno, yorumlayici, yeni_arg, ortam, derinlik + 1, ilk);
+    }
+    sayi n = bayt_say(veri);
+    eger (n < 64 || !elf_mi(veri)) { don -ENOEXEC; }
+    sayi ka = upp.cekirdek.kullanici_alan_yeni();
+    eger (ka == 0) { don -ENOMEM; }
+    // Yükleyici sürecin alanına yazar: geçici olarak yeni alana çevrilir, sonra geri
+    // alınır; görüntü yalnızca başarıda değişir.
+    Surec eski = g_surec[s];
+    g_surec[s].ka = ka;
+    g_surec[s].mmap_ust = MMAP_UST;
+    sayi t = upp.tampon.yeni(n);
+    upp.tampon.metin_yaz(t, 0, veri);
+    metin hata_m = elf_yukle_tampon(s, t, n, arg, ortam, dosya);
+    upp.tampon.birak(t);
+    Surec yeni = g_surec[s];
+    g_surec.yaz(s, eski);
+    eger (hata_m != "") {
+        upp.cekirdek.kullanici_alan_sil(ka);
+        eger (upp.metin.baslar(hata_m, "bellek yetersiz")) { don -ENOMEM; }
+        eger (upp.metin.baslar(hata_m, "argüman listesi")) { don -E2BIG; }
+        don -ENOEXEC;
+    }
+    // Dönüşü olmayan nokta: eski görüntünün paylaşımlı eşlemeleri geri yazılır,
+    // O_CLOEXEC tanımlayıcılar kapanır, yakalanan sinyaller varsayılana döner.
+    esl_surec_bitti(s, dogru);
+    her (sayi fd in 0..FD_MAX) {
+        eger (fd_gecerli(s, fd) && (g_fd_bayrak[fd_yer(s, fd)] & O_CLOEXEC) != 0) { fd_kur(s, fd, FD_KAPALI, -1, 0); }
+    }
+    her (sayi i in 0..64) {
+        metin e = g_sig_eylem[s * 64 + i];
+        eger (e == "") { devam; }
+        sayi st = upp.tampon.yeni(32);
+        upp.tampon.metin_yaz(st, 0, e);
+        eger (upp.tampon.oku64(st, 0) != 1) { g_sig_eylem.yaz(s * 64 + i, ""); }
+        upp.tampon.birak(st);
+    }
+    g_surec[s].ka = ka;
+    g_surec[s].giris = yeni.giris;
+    g_surec[s].yigin = yeni.yigin;
+    g_surec[s].brk_bas = yeni.brk_bas;
+    g_surec[s].brk = yeni.brk;
+    g_surec[s].mmap_ust = MMAP_UST;
+    g_surec[s].ad = yol_ad(ilk);
+    g_surec[s].yol = fs_yol(no);
+    // çekirdek eski alanı sistem çağrısı dönerken bırakır
+    upp.cekirdek.kullanici_yurut(ka, yeni.giris, yeni.yigin);
+    klog_sessiz("süreç {g_surec[s].pid}: execve {g_surec[s].yol}");
+    don 0;
+}
+
+// ---- wait4 / waitid ----
+sabit sayi WNOHANG = 1;
+sabit sayi WUNTRACED = 2;
+sabit sayi WEXITED = 4;
+sabit sayi WCONTINUED = 8;
+sabit sayi WNOWAIT = 0x01000000;
+sabit sayi W_LINUX = 0xE0000000;      // __WNOTHREAD, __WALL, __WCLONE
+
+// c, s'nin beklediği çocuklardan mı (pid > 0 o çocuk, -1 hepsi, 0 kendi grubu,
+// < -1 -pid grubu)?
+fonk cocuk_eslesir(sayi s, sayi c, sayi pid) -> mantik {
+    eger (g_surec[c].pid == 0 || g_surec[c].ebeveyn != g_surec[s].pid) { don yanlis; }
+    eger (pid > 0) { don g_surec[c].pid == pid; }
+    eger (pid == 0) { don g_surec[c].pgid == g_surec[s].pgid; }
+    eger (pid < -1) { don g_surec[c].pgid == -pid; }
+    don dogru;
+}
+
+// Eşleşen bir zombi çocuk bekler. Dönüş: yuvası; -1: WNOHANG ile henüz yok;
+// -1000 - errno: hata (ECHILD, kesilme).
+fonk zombi_bekle(sayi s, sayi pid, mantik beklemesiz) -> sayi {
+    iken (dogru) {
+        mantik var = yanlis;
+        her (sayi i in 0..g_surec.uzunluk()) {
+            eger (!cocuk_eslesir(s, i, pid)) { devam; }
+            var = dogru;
+            eger (g_surec[i].zombi) { don i; }
+        }
+        eger (!var) { don -1000 - ECHILD; }
+        eger (beklemesiz) { don -1; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don -1000 + r; }
+    }
+    don -1;
+}
+
+fonk sc_wait4(sayi s, sayi pid, sayi durum_adr, sayi kip_bayrak, sayi rusage) -> sayi {
+    eger ((kip_bayrak & (0xFFFFFFFF - WNOHANG - WUNTRACED - WCONTINUED - W_LINUX)) != 0) { don -EINVAL; }
+    sayi c = zombi_bekle(s, pid, (kip_bayrak & WNOHANG) != 0);
+    eger (c == -1) { don 0; }
+    eger (c < -1) { don c + 1000; }
+    eger (durum_adr != 0) {
+        sayi t = upp.tampon.yeni(4);
+        upp.tampon.yaz32(t, 0, g_surec[c].durum_kodu);
+        eger (sc_yapi_ver(s, durum_adr, t, 4) < 0) { don -EFAULT; }
+    }
+    eger (rusage != 0) {
+        // struct rusage (144 bayt): süreler ve sayaçlar tutulmuyor
+        sayi t = upp.tampon.yeni(144);
+        eger (sc_yapi_ver(s, rusage, t, 144) < 0) { don -EFAULT; }
+    }
+    sayi cpid = g_surec[c].pid;
+    surec_yuva_bosalt(c);
+    don cpid;
+}
+
+// waitid(idtype, id, siginfo, kip_bayrak, rusage): P_ALL 0, P_PID 1, P_PGID 2. siginfo'ya
+// si_signo, si_errno, si_code (CLD_EXITED 1 / CLD_KILLED 2), si_pid, si_uid,
+// si_status yazılır; değişen çocuk yoksa (WNOHANG) hepsi sıfırdır.
+fonk sc_waitid(sayi s, sayi tur, sayi id, sayi bilgi, sayi kip_bayrak, sayi rusage) -> sayi {
+    eger ((kip_bayrak & (0xFFFFFFFF - WNOHANG - WUNTRACED - WEXITED - WCONTINUED - WNOWAIT - W_LINUX)) != 0) { don -EINVAL; }
+    eger ((kip_bayrak & (WUNTRACED | WEXITED | WCONTINUED)) == 0) { don -EINVAL; }
+    sayi pid = -1;
+    eger (tur == 1) {
+        eger (id <= 0) { don -EINVAL; }
+        pid = id;
+    } yoksa eger (tur == 2) {
+        eger (id < 0) { don -EINVAL; }
+        pid = -id;
+        eger (id == 0) { pid = 0; }
+        eger (id == 1) { don -ECHILD; }
+    } yoksa eger (tur != 0) {
+        don -EINVAL;
+    }
+    sayi c = -1;
+    // yalnızca çıkış (WEXITED) beklenebilir; durma/sürme olayı yoktur
+    eger ((kip_bayrak & WEXITED) != 0) {
+        c = zombi_bekle(s, pid, (kip_bayrak & WNOHANG) != 0);
+        eger (c < -1) { don c + 1000; }
+    } yoksa {
+        mantik var = yanlis;
+        her (sayi i in 0..g_surec.uzunluk()) {
+            eger (cocuk_eslesir(s, i, pid)) { var = dogru; }
+        }
+        eger (!var) { don -ECHILD; }
+        eger ((kip_bayrak & WNOHANG) == 0) { don -EINVAL; }
+    }
+    sayi t = upp.tampon.yeni(28);
+    eger (c >= 0) {
+        sayi d = g_surec[c].durum_kodu;
+        upp.tampon.yaz32(t, 0, 17);                 // si_signo: SIGCHLD
+        eger (d % 256 == 0) {
+            upp.tampon.yaz32(t, 8, 1);              // CLD_EXITED
+            upp.tampon.yaz32(t, 24, d / 256);
+        } yoksa {
+            upp.tampon.yaz32(t, 8, 2);              // CLD_KILLED
+            upp.tampon.yaz32(t, 24, d % 128);
+        }
+        upp.tampon.yaz32(t, 16, g_surec[c].pid);
+    }
+    eger (bilgi != 0 && sc_yapi_ver(s, bilgi, t, 28) < 0) { don -EFAULT; }
+    eger (bilgi == 0) { upp.tampon.birak(t); }
+    eger (c >= 0 && rusage != 0) {
+        sayi r = upp.tampon.yeni(144);
+        eger (sc_yapi_ver(s, rusage, r, 144) < 0) { don -EFAULT; }
+    }
+    eger (c >= 0 && (kip_bayrak & WNOWAIT) == 0) { surec_yuva_bosalt(c); }
     don 0;
 }
 
@@ -408,7 +762,7 @@ fonk sc_futex(sayi s, sayi adres, sayi islem, sayi deger, sayi zaman) -> sayi {
 fonk sc_sysinfo(sayi s, sayi adres) -> sayi {
     sayi surec_sayisi = 0;
     her (oto p in g_surec) {
-        eger (p.pid != 0) { surec_sayisi += 1; }
+        eger (p.pid != 0 && !p.zombi) { surec_sayisi += 1; }
     }
     sayi t = upp.tampon.yeni(112);
     upp.tampon.doldur(t, 0, 112, 0);

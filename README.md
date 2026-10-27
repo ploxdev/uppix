@@ -96,6 +96,8 @@ fbdemo: çizildi (sağ üst köşe)
 
 Kabuk, çalıştırılabilir bir ELF dosyasını (`/usr/bin`'de ya da yol vererek) ayrı bir adres alanında, ring 3'te çalıştırır. Program yalnızca sistem çağrılarıyla konuşur; çekirdeği bozamaz. Bir istisna (boş gösterici, geçersiz komut, sıfıra bölme) yalnızca o süreci Linux'taki sinyaller gibi sonlandırır: çıkış kodu 128 + sinyaldir, kabuk çalışmaya devam eder.
 
+**Çoklu süreç:** `fork` adres alanını kopyalar (sahipli her sayfa yeni bir çerçeveye; çerçeve tamponu paylaşılır) ve çocuğu ebeveynin sistem çağrısı anındaki yazmaçlarıyla kendi çekirdek görevinde başlatır; çocukta `fork` 0 döner. Çocuğa tanımlayıcılar (boru sayaçlarıyla), çalışma dizini, umask, sinyal eylemleri ve maskesi, kaynak sınırları ve paylaşımlı eşleme kayıtları geçer; çocuğun çıktısı ebeveyninkiyle aynı boruya ya da yönlendirmeye gider. `execve` ELF'i ya da `#!` betiğini yeni bir adres alanına yükler; yükleme başarısızsa eski görüntü sürer. Süreç tablosu gerçek ebeveyn PID'ini tutar: biten süreç ebeveyni `wait4` ile toplayana dek zombi kalır, ebeveyni biten çocuklar kabuğa (1) geçer, kabuk kendi çocuklarını kendisi toplar. Borular 64 KiB'lık çekirdek nesneleridir.
+
 **Sistem çağrıları:** Numaralar, bayraklar, errno değerleri ve yapı düzenleri Linux x86_64'le aynıdır. Çağrı `syscall` komutuyla yapılır: rax numara; rdi, rsi, rdx, r10, r8, r9 argüman; hata dönüşü `-errno`.
 
 | No | Çağrı | Uppix'te |
@@ -119,7 +121,12 @@ Kabuk, çalıştırılabilir bir ELF dosyasını (`/usr/bin`'de ya da yol verere
 | 9, 11, 12, 26 | `mmap`, `munmap`, `brk`, `msync` | Anonim, dosyadan, `MAP_FIXED`; dosya destekli `MAP_SHARED` yazmaları `msync`, `munmap` ve süreç sonunda dosyaya yazılır (`MAP_PRIVATE` sürece özel); `/dev/fb0` `MAP_SHARED` ile çerçeve tamponunu doğrudan eşler |
 | 10, 28 | `mprotect`, `madvise` | Sayfa koruması; eşlenmemiş aralıkta `ENOMEM`; `MADV_DONTNEED` sayfayı sıfırlar |
 | 60, 231 | `exit`, `exit_group` | |
-| 39, 186, 110, 218 | `getpid`, `gettid`, `getppid`, `set_tid_address` | |
+| 39, 186, 110, 218 | `getpid`, `gettid`, `getppid`, `set_tid_address` | `getppid` gerçek ebeveyni verir (kabuğun çalıştırdığı süreçte 1) |
+| 57, 58, 56 | `fork`, `vfork`, `clone` | Adres alanının kopyası, çocuk kendi görevinde; `vfork` `fork` gibidir; `clone` yalnızca fork'a denk bayraklarla (`SIGCHLD`, `CLONE_CHILD_SETTID`, `CLONE_CHILD_CLEARTID`, `CLONE_PARENT_SETTID`, `CLONE_SETTLS`; glibc `fork()` böyle çağırır), `CLONE_VM`/`CLONE_THREAD` için `ENOSYS`; görev tablosu doluysa (32) `EAGAIN` |
+| 59 | `execve` | ELF ve `#!` betikleri (yorumlayıcı + tek argüman, en çok 4 düzey); argv/envp kullanıcı belleğinden; O_CLOEXEC tanımlayıcılar kapanır, yakalanan sinyaller varsayılana döner (`SIG_IGN` kalır), süreç adı ve `/proc/self/exe` güncellenir; hata sırası Linux'taki gibi: `ENOENT`/`EACCES`, `EFAULT`, `E2BIG` (131072 baytı aşan dizgi), `ENOEXEC` |
+| 61, 247 | `wait4`, `waitid` | pid -1 / > 0 / 0 / < -1, `WNOHANG`; durum Linux kodlamasıyla (çıkışta `(kod & 0xff) << 8`, sinyalde sinyal numarası); `waitid` `P_ALL`/`P_PID`/`P_PGID`, `WEXITED`, `WNOWAIT`, `siginfo` (`CLD_EXITED`/`CLD_KILLED`); `rusage` sıfırlardır; çocuk yoksa `ECHILD`; bekleme sıra vererek yapılır, ön planda Ctrl-C ile kesilir |
+| 22, 293 | `pipe`, `pipe2` | 64 KiB'lık boru: okuma veri ya da EOF'a (bütün yazıcılar kapanınca) dek, yazma yer açılana dek bekler, 4096 bayta kadarki yazma bölünmez; okuyucu yoksa SIGPIPE ve `EPIPE`; `O_CLOEXEC`, `O_NONBLOCK` (`EAGAIN`); `fstat` S_IFIFO, `lseek` `ESPIPE` |
+| 111, 121, 124 | `getpgrp`, `getpgid`, `getsid` | Kabuğun çalıştırdığı süreç kendi grubunun başıdır; çocuklar grubu devralır |
 | 102, 104, 107, 108 | `getuid`, `getgid`, `geteuid`, `getegid` | root (0) |
 | 158 | `arch_prctl` | `ARCH_SET_FS/GS`, `ARCH_GET_FS/GS`: süreç başına FS/GS tabanı (TLS); çekirdek adresinde `EPERM` |
 | 63 | `uname` | `Linux`, `6.1.0-uppix`, `x86_64`; düğüm adı `/etc/hostname`'den |
@@ -129,15 +136,15 @@ Kabuk, çalıştırılabilir bir ELF dosyasını (`/usr/bin`'de ya da yol verere
 | 24 | `sched_yield` | |
 | 318 | `getrandom` | `GRND_NONBLOCK/RANDOM/INSECURE` |
 | 13, 14, 131 | `rt_sigaction`, `rt_sigprocmask`, `sigaltstack` | Eylemler ve maske saklanır ve geri okunur (SIGKILL/SIGSTOP maskelenemez); işleyici çağrılmaz |
-| 62, 200, 234 | `kill`, `tkill`, `tgkill` | Yalnızca sürecin kendisi; varsayılan eylem süreci 128 + sinyal ile bitirir, `SIG_IGN` yok sayar |
+| 62, 200, 234 | `kill`, `tkill`, `tgkill` | pid > 0 süreç, 0 kendi grubu, -1 kendisi dışında herkes, < -1 grup; varsayılan eylem süreci bitirir (çıkış 128 + sinyal), `SIG_IGN` ve varsayılanı yok saymak olan sinyaller etkisizdir; Ctrl-C ön plandaki grubun hepsine gider |
 | 97, 160, 302 | `getrlimit`, `setrlimit`, `prlimit64` | `RLIMIT_STACK` 1 MiB, `RLIMIT_NOFILE` 32; değerler süreç başına saklanır |
 | 95 | `umask` | |
 | 202 | `futex` | `FUTEX_WAIT(_BITSET)`, `FUTEX_WAKE` (tek iş parçacığı: bekleme zaman aşımı ya da Ctrl-C ile biter) |
-| 273, 61, 99 | `set_robust_list`, `wait4`, `sysinfo` | `wait4` çocuk olmadığından `ECHILD` |
+| 273, 99 | `set_robust_list`, `sysinfo` | |
 
 Desteklenmeyen bir çağrı `-ENOSYS` döndürür ve `dmesg`'e bir kez yazılır.
 
-**Uyumluluk testleri:** [`kullanici/sctest.c`](kullanici/sctest.c) temel çağrıları, [`kullanici/sctest2.c`](kullanici/sctest2.c) dosya sistemi, tanımlayıcı, zaman, TLS ve sinyal çağrılarını hata yollarıyla birlikte sınar; çıktılarında adres, inode ya da zaman yoktur. QEMU testi aynı ikilileri Uppix'te ve gerçek Linux'ta çalıştırıp çıktıları `diff` ile karşılaştırır: 58 + 151 satırın hepsi aynıdır. Errno'lar ve denetim sırası gerçek çekirdekle karşılaştırılarak seçilmiştir (ör. `clock_nanosleep` iş parçacığı saatinde `EOPNOTSUPP`, `F_GETFL`'de `O_LARGEFILE`).
+**Uyumluluk testleri:** [`kullanici/sctest.c`](kullanici/sctest.c) temel çağrıları, [`kullanici/sctest2.c`](kullanici/sctest2.c) dosya sistemi, tanımlayıcı, zaman, TLS ve sinyal çağrılarını, [`kullanici/sctest3.c`](kullanici/sctest3.c) fork/wait4/waitid, pipe, dup2 ile yönlendirme, execve (betik, O_CLOEXEC, ortam, hata kodları) ve kill çağrılarını hata yollarıyla birlikte sınar; çıktılarında PID, adres, inode ya da zaman yoktur. QEMU testleri aynı ikilileri Uppix'te ve gerçek Linux'ta çalıştırıp çıktıları `diff` ile karşılaştırır: 58 + 151 + 83 satırın hepsi aynıdır. Errno'lar ve denetim sırası gerçek çekirdekle karşılaştırılarak seçilmiştir (ör. `clock_nanosleep` iş parçacığı saatinde `EOPNOTSUPP`, `F_GETFL`'de `O_LARGEFILE`).
 
 **glibc:** [`kullanici/glibc/gmerhaba.c`](kullanici/glibc/gmerhaba.c) sıradan bir C programıdır ve glibc ile `gcc -static` derlenir. glibc'nin açılışı (`arch_prctl` ile TLS, `brk`, `mmap`, `mprotect`, `prlimit64`, `getrandom`…) ve `printf`, `malloc`, `fopen`, `opendir`, `strerror`, `__thread` değişkenleri Uppix'te değiştirilmeden çalışır; çıktı Linux'takiyle aynıdır. Desteklenmeyen tek çağrı `rseq`'tir; glibc onsuz devam eder.
 
@@ -148,7 +155,9 @@ Desteklenmeyen bir çağrı `-ENOSYS` döndürür ve `dmesg`'e bir kez yazılır
 | `merhaba` | argv ve ortamı yazar; `--cik` ile 7 döner |
 | `sctest` | Temel sistem çağrılarının uyumluluk testi |
 | `sctest2` | Dosya sistemi, tanımlayıcı, zaman, TLS (`arch_prctl` ve `%fs`) ve sinyal çağrılarının uyumluluk testi |
+| `sctest3` | Süreç çağrılarının uyumluluk testi: fork, vfork, clone, wait4, waitid, kill, pipe/pipe2, dup2 ve execve (kendisini, `merhaba`'yı ve bir `#!` betiğini çalıştırır) |
 | `gmerhaba` | glibc ile `gcc -static` derlenmiş program: stdio, malloc, TLS, dizin okuma; 7 döner |
+| `gsurec` | glibc ile `gcc -static` derlenmiş çoklu süreç programı: `fork`, `pipe`, `dup2`, `execv`, `waitpid`, `kill` |
 | `ekran` | Terminal boyutu (`TIOCGWINSZ`) ve stdin terminal mi (`TCGETS`) |
 | `ucat` | stdin'i ya da dosyaları kopyalar (`cat` gibi) |
 | `fbdemo` | `/dev/fb0`'ı açar, ioctl ile ekranı öğrenir, `mmap` ile eşleyip doğrudan piksel çizer |
@@ -228,7 +237,7 @@ root@uppix:~# umount /mnt/sdb1
 | `kaynak/surec.upp` | Kullanıcı süreçleri: süreç tablosu, dosya tanımlayıcıları, ELF64 yükleyici, SysV ilk yığını, kabuktan çalıştırma |
 | `kaynak/sistem_cagrisi.upp` | Linux x86_64 sistem çağrısı dağıtıcısı; G/Ç ve bellek (read, write, open, stat, lseek, ioctl, mmap, brk…) |
 | `kaynak/sistem_cagrisi_dosya.upp` | Dosya sistemi ve tanımlayıcı çağrıları (pread/pwrite, readv/writev, dup, fcntl, getdents64, access, getcwd/chdir, mkdir, unlink, rename, readlink) |
-| `kaynak/sistem_cagrisi_surec.upp` | Süreç, zaman, TLS ve sinyal çağrıları (arch_prctl, uname, clock_*, getrandom, mprotect, rt_sig*, prlimit64, futex, kill…) |
+| `kaynak/sistem_cagrisi_surec.upp` | Süreç, zaman, TLS ve sinyal çağrıları (fork/clone, execve, wait4/waitid, kill, arch_prctl, uname, clock_*, getrandom, mprotect, rt_sig*, prlimit64, futex…) |
 | `kaynak/duzenleyici.upp` | `nano` ve `vi`'nin ortak düzenleyici çekirdeği |
 | `kullanici/*.c` | Ring 3 programları (libc'siz statik Linux ELF); `linux.h` ortak başlık; `kullanici/glibc/*.c` glibc ile statik |
 | `kaynak/yardimci.upp` | Sıralama, biçimleme, joker eşleme, takvim/Unix zamanı |
@@ -252,6 +261,7 @@ python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix
 | `tests/cekirdek/02_uppix_disk.upp` | İmajları sıfırdan üretir, üç dosya sistemine yazar, sonra Linux araçlarıyla denetler: `e2fsck -fn`, `debugfs`, `fsck.fat`, `mtype`, `fsck.exfat` |
 | `tests/cekirdek/03_uppix_kalici.upp` | Aynı imajlarla ikinci açılış: yazılanlar yerinde mi |
 | `tests/cekirdek/06_uppix_kullanici.upp` | Ring 3: argv/çıkış kodu, `sctest`, `sctest2`, glibc ile derlenmiş `gmerhaba`, terminal ioctl'u, boru, SIGSEGV, zaman dilimiyle kesilen döngü ve `kill`; üç programın çıktısı gerçek Linux'takiyle `diff` ile karşılaştırılır, ext4 kök sonra `e2fsck` ile denetlenir |
+| `tests/cekirdek/11_uppix_surecler.upp` | Çoklu süreç: `sctest3` (fork, wait4, waitid, kill, boru, dup2 + execve, `#!`, O_CLOEXEC, hata kodları) ve glibc ile derlenmiş `gsurec`; ikisinin çıktısı gerçek Linux'takiyle `diff` ile karşılaştırılır; çocukların çıktısı boruya ve `>`'a gider; sonra `e2fsck` |
 | `tests/cekirdek/08_uppix_disk_kaynak.upp` | Linux'ta `fallocate` ile ayrılmış (yazılmamış kapsamlı) ext4 dosyası sıfır okunur ve silinince blokları bırakılır; FAT32 art arda ayrılıp yeniden bağlanır; sonra `e2fsck` ve `fsck.fat` |
 | `tests/cekirdek/07_uppix_araclar.upp` | `hexdump`/`hd` biçimleri; tuşları seri porttan gelen `nano` (yazma, kes/yapıştır, arama, kaydetmeyi sorma) ve `vi` (ekleme, `yy p`, `dd`, `:%s`, `:q`'nun reddi, `:wq`) oturumları |
 | `tests/cekirdek/05_uppix_snake.upp` | `snake -o -n 200` otopilotu beklemeden oynatır; rekor dosyası, boru/yönlendirmede reddetme ve seçenek hataları |
@@ -266,6 +276,8 @@ python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix
 - Disk sürücüleri ATA PIO ve AHCI'dir. AHCI tek komut yuvası kullanır (NCQ yok), kesme yerine yoklar, sıcak takmayı ve ATAPI (SATA CD) aygıtlarını desteklemez. NVMe ve virtio-blk sırada.
 - Aygıt ağacında PCI-PCI köprüleri ayrı veri yolu (`pcib`) olarak yer almaz: bütün veri yolları `pci0`'ın altında düz taranır. Sürücülere kesme (INTx/MSI) bağlanmaz, G/Ç BAR'ları için pencere yoktur. Multiboot yolunda BAR'ın MMIO penceresi yalnızca ilk 1 GiB'de açılabilir (Limine'de HHDM'in kapsadığı her adreste; QEMU'nun 4 GiB altındaki BAR'ları açılır); bu yüzden AHCI yalnızca Limine ile çalışır.
 - Çekirdek içindeki kod işbirlikçidir; yalnızca ring 3 kodu kesilir. Yerleşik komutlar çekirdek içinde çalışır.
-- Kullanıcı süreçleri tek iş parçacıklıdır (`clone` yok). `fork`/`execve`, sinyal işleyicilerinin çağrılması, dinamik bağlama (`PT_INTERP`), sembolik bağlar ve `rseq` henüz yok; statik programlar (libc'siz ya da glibc) çalışır. `dup` ile çoğaltılan tanımlayıcılar dosya konumunu paylaşmaz. Yığın 1 MiB'dır ve sayfa hatasıyla büyümez.
+- Kullanıcı süreçleri tek iş parçacıklıdır: `clone` yalnızca fork'a denk biçimde çalışır, `CLONE_VM`/`CLONE_THREAD` (pthread, `posix_spawn`, glibc `system()`/`popen()`) yoktur. Sinyal işleyicileri çağrılmaz, durdurma (SIGSTOP/SIGTSTP) da yoktur: yakalanan sinyal de süreci bitirir. Dinamik bağlama (`PT_INTERP`), sembolik bağlar ve `rseq` yok; statik programlar (libc'siz ya da glibc) çalışır.
+- `fork` sayfaları hemen kopyalar (yazmada kopyalama, COW yok). `MAP_SHARED` dosya eşlemeleri çocukta özel bir kopyaya dönüşür: ebeveyn ve çocuk birbirinin yazdığını görmez, ikisi de kendi yazdığını `msync`/`munmap`/çıkışta dosyaya geri yazar. `dup` ya da `fork` ile çoğaltılan tanımlayıcılar dosya konumunu paylaşmaz; kabuktan gelen stdin (boru, `<`) çocuğa kopyalanır. Her çocuk bir çekirdek görevi kullanır: aynı anda en çok 32 görev (kabuk ve arka plan işleri dahil), dolunca `fork` `EAGAIN` döner.
+- Başka bir süreçten gelen sinyal, fork'un çocuğunu hemen bitirir; kabuğun görevinde koşan süreci (kabuktan başlatılan süreç) ise sıradaki sistem çağrısında ya da beklerken bitirir: sistem çağrısı yapmayan bir döngü yalnızca Ctrl-C ya da kabuğun `kill`'iyle durur. `rusage` ve süreç süreleri tutulmaz. `execve`'de argüman/ortam toplamı 256 KiB'ı aşamaz. Yığın 1 MiB'dır ve sayfa hatasıyla büyümez.
 - Çerçeve tamponu 4 GiB'nin altında ve RGB olmalı; değilse ekran çıktısı yalnızca seri porta gider. SMP yok: yalnızca açılış işlemcisi çalışır.
 - `uppc` henüz Uppix içinde çalışmıyor, çünkü C çıktısını derleyecek bir derleyici gerekiyor.

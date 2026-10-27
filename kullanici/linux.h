@@ -28,11 +28,17 @@ typedef long ssize_t;
 #define SYS_readv 19
 #define SYS_writev 20
 #define SYS_access 21
+#define SYS_pipe 22
 #define SYS_madvise 28
 #define SYS_msync 26
 #define SYS_dup 32
 #define SYS_dup2 33
 #define SYS_getpid 39
+#define SYS_clone 56
+#define SYS_fork 57
+#define SYS_vfork 58
+#define SYS_execve 59
+#define SYS_wait4 61
 #define SYS_kill 62
 #define SYS_uname 63
 #define SYS_fcntl 72
@@ -45,6 +51,8 @@ typedef long ssize_t;
 #define SYS_unlink 87
 #define SYS_readlink 89
 #define SYS_umask 95
+#define SYS_getppid 110
+#define SYS_getpgrp 111
 #define SYS_gettimeofday 96
 #define SYS_getrlimit 97
 #define SYS_mprotect 10
@@ -53,6 +61,7 @@ typedef long ssize_t;
 #define SYS_time 201
 #define SYS_futex 202
 #define SYS_getdents64 217
+#define SYS_waitid 247
 #define SYS_clock_gettime 228
 #define SYS_clock_getres 229
 #define SYS_clock_nanosleep 230
@@ -64,6 +73,7 @@ typedef long ssize_t;
 #define SYS_renameat 264
 #define SYS_faccessat 269
 #define SYS_dup3 292
+#define SYS_pipe2 293
 #define SYS_prlimit64 302
 #define SYS_getrandom 318
 
@@ -77,6 +87,7 @@ typedef long ssize_t;
 #define O_DIRECTORY 0200000
 
 #define O_CLOEXEC 02000000
+#define O_NONBLOCK 04000
 #define AT_FDCWD (-100)
 #define AT_REMOVEDIR 0x200
 #define AT_EMPTY_PATH 0x1000
@@ -102,6 +113,13 @@ typedef long ssize_t;
 #define S_IFDIR 0040000
 #define S_IFREG 0100000
 #define S_IFCHR 0020000
+#define S_IFIFO 0010000
+
+#define WNOHANG 1
+#define WEXITED 4
+#define P_ALL 0
+#define P_PID 1
+#define SIGCHLD 17
 
 struct stat {
     unsigned long st_dev, st_ino, st_nlink;
@@ -194,6 +212,13 @@ static inline long sys_nanosleep(const struct timespec* t, struct timespec* k) {
 static inline void sys_exit(int k) {
     for (;;) sc1(SYS_exit, k);
 }
+static inline long sys_fork(void) { return sc0(SYS_fork); }
+static inline long sys_wait4(long pid, int* st, int o) { return sc6(SYS_wait4, pid, (long)st, o, 0, 0, 0); }
+static inline long sys_pipe(int* p) { return sc1(SYS_pipe, p); }
+static inline long sys_pipe2(int* p, int f) { return sc2(SYS_pipe2, p, f); }
+static inline long sys_dup2(int a, int b) { return sc2(SYS_dup2, a, b); }
+static inline long sys_execve(const char* p, char* const* a, char* const* e) { return sc3(SYS_execve, p, a, e); }
+static inline long sys_kill(long pid, int sig) { return sc2(SYS_kill, pid, sig); }
 
 /* gcc yapı ilklendirmesi için örtük çağırabilir */
 void* memset(void* d, int c, size_t n) {

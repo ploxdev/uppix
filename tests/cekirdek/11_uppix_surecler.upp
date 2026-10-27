@@ -1,0 +1,33 @@
+// Çekirdek: Uppix çoklu süreç: fork/vfork/clone, execve (ELF, #! betiği, O_CLOEXEC),
+// wait4/waitid, pipe/pipe2, dup2 ile yönlendirme ve kill (sctest3); glibc ile statik
+// derlenmiş fork/pipe/waitpid/execv programı (gsurec). fork'un çocuklarının çıktısı
+// ebeveynin borusuna/yönlendirmesine gider.
+// Denetim: aynı sctest3/gsurec ikilileri gerçek Linux'ta çalıştırılır; çıktıları
+// Uppix'teki çıktıyla satır satır aynı olmalıdır. Sonra ext4 kök e2fsck ile denetlenir.
+// @gerek: cc mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
+// @hazirla: rm -rf tests/_cikti/surec_img
+// @bayrak: --onyukleyici limine --disk tests/_cikti/surec_img/uppix.img --disk-hazirla disk_yap.sh
+// @girdi: sctest3; echo "sctest3 kod=$?"
+// @girdi: gsurec; echo "gsurec kod=$?"
+// @girdi: sctest3 | grep -c "exec> "
+// @girdi: sctest3 > /tmp/s3.txt; grep "betik argv: y z" /tmp/s3.txt
+// @girdi: ls /root | grep -c sct3_d
+// @girdi: poweroff
+// @icerir: === sctest3 bitti ===
+// @icerir: sctest3 kod=0
+// @icerir: glibc süreçler bitti
+// @icerir: gsurec kod=0
+// @icerir: 6
+// @icerir: betik argv: y z
+// @icerir: Sistem kapatılıyor...
+// @denetle: test -x tests/_cikti/surec_img/kullanici/sctest3 && test -x tests/_cikti/surec_img/kullanici/gsurec
+// @denetle: K=$(pwd) && D=$(mktemp -d) && cd "$D" && "$K/tests/_cikti/surec_img/kullanici/sctest3" > linux.txt && cd "$K" && sed -n '/=== sctest3 başla/,/=== sctest3 bitti/p' tests/_cikti/ck_11_uppix_surecler.konsol | tr -d '\r' > "$D/uppix.txt" && diff "$D/linux.txt" "$D/uppix.txt" && rm -rf "$D"
+// @denetle: K=$(pwd) && D=$(mktemp -d) && cd "$D" && "$K/tests/_cikti/surec_img/kullanici/gsurec" > linux.txt && cd "$K" && sed -n '/^glibc süreçler başla/,/^glibc süreçler bitti/p' tests/_cikti/ck_11_uppix_surecler.konsol | tr -d '\r' > "$D/uppix.txt" && diff "$D/linux.txt" "$D/uppix.txt" && rm -rf "$D"
+// @denetle: dd if=tests/_cikti/surec_img/uppix.img of=/tmp/upp_surec_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_surec_p2.img && rm -f /tmp/upp_surec_p2.img
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}
