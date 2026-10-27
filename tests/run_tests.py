@@ -17,6 +17,7 @@ Kaynak yorumları:
   cekirdek/ --hedef cekirdek ile derlenip QEMU'da açılır; QEMU yoksa atlanır
   // @girdi: METİN    cekirdek/ testlerinde seri porta gönderilecek satır
   // @girdi_kacis: M  aynısı; \\e (ESC), \\xNN, \\r, \\t kaçışları çözülür
+  // @bekle: METİN    cekirdek/: sonraki girdiler konsolda METİN görününce gönderilir
   // @gerek: araç...  cekirdek/: bu komutlar POSIX kabukta yoksa test atlanır
   // @hazirla: KOMUT  cekirdek/: derlemeden önce POSIX kabukta çalışır (ör. disk imajı)
   // @denetle: KOMUT  cekirdek/: QEMU kapandıktan sonra çalışır; 0 dışı çıkış = başarısız
@@ -36,6 +37,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -117,6 +119,8 @@ class Meta:
     cikis: Optional[int] = None
     bayrak: List[str] = field(default_factory=list)
     girdi: List[str] = field(default_factory=list)
+    # cekirdek/: sıralı adımlar ("girdi", satır) ya da ("bekle", metin)
+    adim: List[Tuple[str, str]] = field(default_factory=list)
     gerek: List[str] = field(default_factory=list)
     hazirla: List[str] = field(default_factory=list)
     denetle: List[str] = field(default_factory=list)
@@ -148,10 +152,17 @@ def meta_oku(kaynak: str, yol: str) -> Meta:
             ham = s.split(":", 1)[1].strip()
             ham = ham.replace("\\e", "\\x1b")
             meta.girdi.append(ham.encode("latin1", "backslashreplace").decode("unicode_escape"))
+            meta.adim.append(("girdi", meta.girdi[-1]))
             continue
         if s.startswith("// @girdi:"):
             stdout_mod = False
             meta.girdi.append(s.split(":", 1)[1].strip())
+            meta.adim.append(("girdi", meta.girdi[-1]))
+            continue
+        if s.startswith("// @bekle:"):
+            # sonraki girdiler konsol çıktısında bu metin görününce gönderilir
+            stdout_mod = False
+            meta.adim.append(("bekle", s.split(":", 1)[1].strip()))
             continue
         if s.startswith("// @bayrak:"):
             stdout_mod = False
@@ -424,6 +435,28 @@ def posix_kabuk(komut: str, timeout: float = 300.0) -> Tuple[int, str]:
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
 
 
+def _adimlari_gonder(proc: "subprocess.Popen", adimlar: List[Tuple[str, str]], cikti_yol: str, sure: float) -> bool:
+    """@girdi satırlarını sırayla yazar; @bekle'de metin konsol çıktısında
+    görünene kadar bekler. Süre dolarsa ya da süreç biterse yanlış."""
+    son = time.time() + sure
+    for tur, metin in adimlar:
+        if tur == "girdi":
+            proc.stdin.write((metin + "\n").encode("utf-8"))
+            proc.stdin.flush()
+            continue
+        while True:
+            try:
+                with open(cikti_yol, encoding="utf-8", errors="replace") as f:
+                    if metin in f.read():
+                        break
+            except OSError:
+                pass
+            if proc.poll() is not None or time.time() > son:
+                return False
+            time.sleep(0.2)
+    return True
+
+
 def calistir_cekirdek(uppc: str, yol: str, meta: Meta, cikti_dir: str, timeout: float) -> Sonuc:
     ad = os.path.relpath(yol, TESTS)
     if meta.gerek:
@@ -447,7 +480,10 @@ def calistir_cekirdek(uppc: str, yol: str, meta: Meta, cikti_dir: str, timeout: 
             stderr=subprocess.STDOUT,
         )
         try:
-            if girdi:
+            if any(t == "bekle" for t, _ in meta.adim):
+                if not _adimlari_gonder(proc, meta.adim, cikti_yol, max(timeout, 120.0)):
+                    raise subprocess.TimeoutExpired(uppc, max(timeout, 120.0))
+            elif girdi:
                 proc.stdin.write(girdi.encode("utf-8"))
                 proc.stdin.flush()
             proc.wait(timeout=max(timeout, 120.0))
