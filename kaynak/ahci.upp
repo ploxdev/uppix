@@ -1,0 +1,384 @@
+// Uppix — AHCI (SATA) sürücüleri: denetleyici (ahci, PCI üzerinde) ve kapılar (ahcich).
+// ahci ABAR'ı (BAR5) MMIO olarak açar, denetleyiciyi sıfırlayıp AHCI kipine alır ve
+// uygulanan her kapı için bir ahcich çocuğu ekler. ahcich kapıyı başlatır; imzası SATA
+// disk olan kapıdaki diski IDENTIFY ile tanıyıp disk kaydına koyar. Okuma/yazma READ/WRITE
+// DMA EXT ile, veri doğrudan çağıranın tamponuna (PRDT tamponun fiziksel adresini
+// gösterir) aktarılır; yazmadan sonra FLUSH CACHE EXT gelir. Kesme yoktur: komut bitişi
+// yoklanır, zaman aşımı ve hata (PxTFD.ERR, PxIS.TFES) denetlenir.
+
+sabit sayi AHCI_CAP = 0x00;
+sabit sayi AHCI_GHC = 0x04;
+sabit sayi AHCI_PI = 0x0C;
+sabit sayi AHCI_VS = 0x10;
+sabit sayi AHCI_GHC_HR = 0x1;
+sabit sayi AHCI_GHC_AE = 0x80000000;
+sabit sayi AHCI_CAP_S64A = 0x80000000;
+
+// Kapı yazmaçları (kapı tabanı 0x100 + kapı * 0x80'e göre).
+sabit sayi AHCI_P_CLB = 0x00;
+sabit sayi AHCI_P_CLBU = 0x04;
+sabit sayi AHCI_P_FB = 0x08;
+sabit sayi AHCI_P_FBU = 0x0C;
+sabit sayi AHCI_P_IS = 0x10;
+sabit sayi AHCI_P_IE = 0x14;
+sabit sayi AHCI_P_CMD = 0x18;
+sabit sayi AHCI_P_TFD = 0x20;
+sabit sayi AHCI_P_SIG = 0x24;
+sabit sayi AHCI_P_SSTS = 0x28;
+sabit sayi AHCI_P_SERR = 0x30;
+sabit sayi AHCI_P_CI = 0x38;
+sabit sayi AHCI_CMD_ST = 0x1;
+sabit sayi AHCI_CMD_SUD = 0x2;
+sabit sayi AHCI_CMD_POD = 0x4;
+sabit sayi AHCI_CMD_FRE = 0x10;
+sabit sayi AHCI_CMD_FR = 0x4000;
+sabit sayi AHCI_CMD_CR = 0x8000;
+sabit sayi AHCI_IS_TFES = 0x40000000;
+sabit sayi AHCI_TFD_ERR = 0x01;
+sabit sayi AHCI_TFD_MESGUL = 0x88;
+sabit sayi AHCI_IMZA_SATA = 0x00000101;
+
+sabit sayi ATA_IDENTIFY = 0xEC;
+sabit sayi ATA_READ_DMA_EXT = 0x25;
+sabit sayi ATA_WRITE_DMA_EXT = 0x35;
+sabit sayi ATA_FLUSH_CACHE_EXT = 0xEA;
+
+// Bir komutta en çok bu kadar sektör (1 MiB, tek PRDT girdisi).
+sabit sayi AHCI_PARCA = 2048;
+
+// Kapının DMA belleği: komut listesi (1 KiB hizalı, 32 başlık), alınan FIS'ler (256 B
+// hizalı) ve tek komut tablosu (128 B hizalı: 64 B FIS, 16 B ATAPI, ayrılmış, 0x80'de
+// PRDT). Hepsi 1 KiB hizalı tek tamponda art arda durur.
+sabit sayi AHCI_BELLEK = 1536;
+sabit sayi AHCI_FIS_OFS = 1024;
+sabit sayi AHCI_TABLO_OFS = 1280;
+
+sinif AhciKapi {
+    sayi aygit;
+    sayi mmio;
+    sayi taban;
+    sayi sektor;
+    metin model;
+    mantik genis;
+    mantik etkin;
+    DmaTampon bellek;
+}
+
+liste[AhciKapi] g_ahci_kapi;
+
+fonk iki_ussu(sayi n) -> sayi {
+    sayi v = 1;
+    dongu (sayi i = 0; i < n; i += 1) { v *= 2; }
+    don v;
+}
+
+fonk ahci_kapi_oku(sayi k, sayi yazmac) -> sayi => upp.cekirdek.mmio_oku32(g_ahci_kapi[k].mmio, g_ahci_kapi[k].taban + yazmac);
+
+fonk ahci_kapi_yaz(sayi k, sayi yazmac, sayi v) -> bos {
+    upp.cekirdek.mmio_yaz32(g_ahci_kapi[k].mmio, g_ahci_kapi[k].taban + yazmac, v);
+}
+
+// Zaman aşımı: tik (ms) ilerlemiyorsa (kesmeler kapalıyken) yoklama sayısı da sınırdır.
+fonk ahci_son_an(sayi ms) -> sayi => upp.cekirdek.tik() + ms;
+
+fonk ahci_zaman_doldu(sayi son, sayi tur, sayi ms) -> mantik => upp.cekirdek.tik() > son || tur > ms * 2000;
+
+// Yazmaçtaki maske bitleri istenen değere (0 ya da maske) gelene dek bekler.
+fonk ahci_kapi_bekle(sayi k, sayi yazmac, sayi maske, sayi istenen, sayi ms) -> mantik {
+    sayi son = ahci_son_an(ms);
+    sayi tur = 0;
+    iken ((ahci_kapi_oku(k, yazmac) & maske) != istenen) {
+        tur += 1;
+        eger (ahci_zaman_doldu(son, tur, ms)) { don yanlis; }
+    }
+    don dogru;
+}
+
+// Komut motorunu durdurur (ST, sonra FRE kapatılır; CR ve FR düşene dek beklenir).
+fonk ahci_kapi_durdur(sayi k) -> mantik {
+    sayi cmd = ahci_kapi_oku(k, AHCI_P_CMD);
+    ahci_kapi_yaz(k, AHCI_P_CMD, cmd & (0xFFFFFFFF - AHCI_CMD_ST));
+    eger (!ahci_kapi_bekle(k, AHCI_P_CMD, AHCI_CMD_CR, 0, 500)) { don yanlis; }
+    cmd = ahci_kapi_oku(k, AHCI_P_CMD);
+    ahci_kapi_yaz(k, AHCI_P_CMD, cmd & (0xFFFFFFFF - AHCI_CMD_FRE));
+    don ahci_kapi_bekle(k, AHCI_P_CMD, AHCI_CMD_FR, 0, 500);
+}
+
+fonk ahci_kapi_baslat(sayi k) -> mantik {
+    eger (!ahci_kapi_bekle(k, AHCI_P_TFD, AHCI_TFD_MESGUL, 0, 1000)) { don yanlis; }
+    ahci_kapi_yaz(k, AHCI_P_CMD, ahci_kapi_oku(k, AHCI_P_CMD) | AHCI_CMD_FRE | AHCI_CMD_ST);
+    don dogru;
+}
+
+// Hatadan sonra: motor durdurulur, SERR/IS temizlenir, yeniden başlatılır.
+fonk ahci_kapi_toparla(sayi k) -> bos {
+    ahci_kapi_durdur(k);
+    ahci_kapi_yaz(k, AHCI_P_SERR, 0xFFFFFFFF);
+    ahci_kapi_yaz(k, AHCI_P_IS, 0xFFFFFFFF);
+    ahci_kapi_baslat(k);
+}
+
+fonk ahci_yaz_adres(sayi t, sayi ofs, sayi fiz) -> bos {
+    upp.tampon.yaz32(t, ofs, fiz & 0xFFFFFFFF);
+    upp.tampon.yaz32(t, ofs + 4, fiz / 0x100000000);
+}
+
+// Tek komut (yuva 0): H2D yazmaç FIS'i, en çok bir PRDT girdisi (fiz, boy bayt; boy 0 =
+// veri yok). Dönüş: komut hatasız bitti mi.
+fonk ahci_komut(sayi k, sayi komut, sayi lba, sayi adet, sayi fiz, sayi boy, mantik yazma) -> mantik {
+    DmaTampon b = g_ahci_kapi[k].bellek;
+    sayi t = b.tampon;
+    sayi liste_ofs = b.ofs;
+    sayi tablo = b.ofs + AHCI_TABLO_OFS;
+    upp.tampon.doldur(t, liste_ofs, 32, 0);
+    upp.tampon.doldur(t, tablo, 0x90, 0);
+    sayi prdtl = 0;
+    eger (boy > 0) { prdtl = 1; }
+    // Komut başlığı: CFL = 5 dword, W (yazma), PRDTL; CTBA komut tablosunun adresi.
+    sayi dw0 = 5 + prdtl * 65536;
+    eger (yazma) { dw0 += 0x40; }
+    upp.tampon.yaz32(t, liste_ofs, dw0);
+    ahci_yaz_adres(t, liste_ofs + 8, dma_fiziksel(b, AHCI_TABLO_OFS));
+    // H2D yazmaç FIS'i (tür 0x27, C biti): LBA48, aygıt = LBA kipi.
+    upp.tampon.yaz8(t, tablo, 0x27);
+    upp.tampon.yaz8(t, tablo + 1, 0x80);
+    upp.tampon.yaz8(t, tablo + 2, komut);
+    sayi l = lba;
+    dongu (sayi i = 0; i < 6; i += 1) {
+        sayi yer = tablo + 4 + i;
+        eger (i >= 3) { yer = tablo + 5 + i; }
+        upp.tampon.yaz8(t, yer, l % 256);
+        l = l / 256;
+    }
+    eger (komut != ATA_IDENTIFY) { upp.tampon.yaz8(t, tablo + 7, 0x40); }
+    upp.tampon.yaz8(t, tablo + 12, adet % 256);
+    upp.tampon.yaz8(t, tablo + 13, (adet / 256) % 256);
+    eger (boy > 0) {
+        ahci_yaz_adres(t, tablo + 0x80, fiz);
+        upp.tampon.yaz32(t, tablo + 0x8C, boy - 1);
+    }
+    eger (!ahci_kapi_bekle(k, AHCI_P_TFD, AHCI_TFD_MESGUL, 0, 1000)) {
+        ahci_kapi_toparla(k);
+        don yanlis;
+    }
+    ahci_kapi_yaz(k, AHCI_P_IS, 0xFFFFFFFF);
+    ahci_kapi_yaz(k, AHCI_P_CI, 1);
+    sayi son = ahci_son_an(10000);
+    sayi tur = 0;
+    mantik tamam = dogru;
+    iken ((ahci_kapi_oku(k, AHCI_P_CI) & 1) != 0) {
+        tur += 1;
+        eger ((ahci_kapi_oku(k, AHCI_P_IS) & AHCI_IS_TFES) != 0 || ahci_zaman_doldu(son, tur, 10000)) {
+            tamam = yanlis;
+            dur;
+        }
+    }
+    eger ((ahci_kapi_oku(k, AHCI_P_IS) & AHCI_IS_TFES) != 0 || (ahci_kapi_oku(k, AHCI_P_TFD) & AHCI_TFD_ERR) != 0) { tamam = yanlis; }
+    eger (!tamam) {
+        klog_sessiz(aygit_adi(g_ahci_kapi[k].aygit) + ": komut 0x" + onaltilik_dolgu(komut, 2) + " başarısız (TFD 0x" + onaltilik_dolgu(ahci_kapi_oku(k, AHCI_P_TFD), 2) + ")");
+        ahci_kapi_toparla(k);
+    }
+    don tamam;
+}
+
+// Tamponun bu bölgesi DMA ile doğrudan kullanılabilir mi (fiziksel adres bilinir, çift,
+// 64 bit adresleme yoksa 4 GiB altında)?
+fonk ahci_dogrudan_mi(sayi k, sayi fiz, sayi boy) -> mantik {
+    eger (fiz < 0 || fiz % 2 != 0) { don yanlis; }
+    don g_ahci_kapi[k].genis || fiz + boy <= 0x100000000;
+}
+
+fonk ahci_aktar(sayi k, sayi lba, sayi adet, sayi t, sayi ofs, mantik yazma) -> mantik {
+    eger (k < 0 || k >= g_ahci_kapi.uzunluk() || !g_ahci_kapi[k].etkin) { don yanlis; }
+    eger (adet < 0 || lba < 0 || lba + adet > g_ahci_kapi[k].sektor) { don yanlis; }
+    // DMA tampon sınırı dışına yazamaz: denetim burada, aktarımdan önce.
+    eger (ofs < 0 || ofs + adet * 512 > upp.tampon.boyut(t)) { don yanlis; }
+    sayi komut = ATA_READ_DMA_EXT;
+    eger (yazma) { komut = ATA_WRITE_DMA_EXT; }
+    sayi i = 0;
+    iken (i < adet) {
+        sayi n = upp.min(adet - i, AHCI_PARCA);
+        sayi boy = n * 512;
+        sayi yer = ofs + i * 512;
+        sayi fiz = upp.cekirdek.tampon_fiziksel(t, yer);
+        mantik tamam = yanlis;
+        eger (ahci_dogrudan_mi(k, fiz, boy)) {
+            tamam = ahci_komut(k, komut, lba + i, n, fiz, boy, yazma);
+        } yoksa {
+            // Hizasız ya da adresi bilinmeyen tampon: ara DMA tamponu üzerinden.
+            DmaTampon ara = dma_ayir(boy, 2);
+            eger (ahci_dogrudan_mi(k, ara.fiziksel, boy)) {
+                eger (yazma) { upp.tampon.kopyala(ara.tampon, ara.ofs, t, yer, boy); }
+                tamam = ahci_komut(k, komut, lba + i, n, ara.fiziksel, boy, yazma);
+                eger (tamam && !yazma) { upp.tampon.kopyala(t, yer, ara.tampon, ara.ofs, boy); }
+            }
+            dma_birak(ara);
+        }
+        eger (!tamam) { don yanlis; }
+        i += n;
+    }
+    eger (yazma && adet > 0) { don ahci_komut(k, ATA_FLUSH_CACHE_EXT, 0, 0, -1, 0, yanlis); }
+    don dogru;
+}
+
+fonk ahci_disk_oku(sayi k, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik => ahci_aktar(k, lba, adet, t, ofs, yanlis);
+
+fonk ahci_disk_yaz(sayi k, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik => ahci_aktar(k, lba, adet, t, ofs, dogru);
+
+// IDENTIFY DEVICE: model (27..46. sözcükler, bayt çiftleri ters) ve sektör sayısı (LBA48
+// destekleniyorsa 100..103. sözcükler, yoksa 60..61.). Dönüş: sektör sayısı, 0 = olmadı.
+fonk ahci_tani_oku(sayi k) -> sayi {
+    DmaTampon d = dma_ayir(512, 2);
+    ertele dma_birak(d);
+    eger (!ahci_komut(k, ATA_IDENTIFY, 0, 0, d.fiziksel, 512, yanlis)) { don 0; }
+    metin model = "";
+    dongu (sayi i = 0; i < 20; i += 1) {
+        sayi w = upp.tampon.oku16(d.tampon, d.ofs + 54 + i * 2);
+        model += upp.metin.karakter(w / 256) + upp.metin.karakter(w % 256);
+    }
+    g_ahci_kapi[k].model = upp.metin.kirp(model);
+    eger ((upp.tampon.oku16(d.tampon, d.ofs + 166) & 0x400) != 0) { don upp.tampon.oku64(d.tampon, d.ofs + 200); }
+    don upp.tampon.oku32(d.tampon, d.ofs + 120);
+}
+
+// ---------------------------------------------------------------- ahci (denetleyici)
+
+fonk ahci_aciklama(sayi satici, sayi aygit) -> metin {
+    secim (satici * 65536 + aygit) {
+        durum 0x80862922: don "Intel ICH9 AHCI SATA denetleyicisi";
+        durum 0x80862829: don "Intel ICH8M AHCI SATA denetleyicisi";
+    }
+    don "";
+}
+
+fonk ahci_yokla(sayi a) -> sayi {
+    eger (aygit_degisken(a, "sinif") != 1 || aygit_degisken(a, "altsinif") != 6 || aygit_degisken(a, "progif") != 1) { don ENXIO; }
+    metin ac = ahci_aciklama(aygit_degisken(a, "satici"), aygit_degisken(a, "aygit"));
+    eger (ac == "") {
+        aygit_aciklama_koy(a, "AHCI SATA denetleyicisi");
+        don YOKLA_GENEL;
+    }
+    aygit_aciklama_koy(a, ac);
+    don YOKLA_VARSAYILAN;
+}
+
+fonk ahci_bagla(sayi a) -> sayi {
+    sayi h = pci_bellek_ayir(a, 5);
+    eger (h == 0) {
+        klog(aygit_adi(a) + ": ABAR (BAR5) açılamadı");
+        don ENXIO;
+    }
+    pci_yonetici_ac(a);
+    // Denetleyici sıfırlanır (BIOS'un bıraktığı kapı durumu silinir), sonra AHCI kipi.
+    upp.cekirdek.mmio_yaz32(h, AHCI_GHC, AHCI_GHC_AE);
+    upp.cekirdek.mmio_yaz32(h, AHCI_GHC, AHCI_GHC_AE | AHCI_GHC_HR);
+    sayi son = ahci_son_an(1000);
+    sayi tur = 0;
+    iken ((upp.cekirdek.mmio_oku32(h, AHCI_GHC) & AHCI_GHC_HR) != 0) {
+        tur += 1;
+        eger (ahci_zaman_doldu(son, tur, 1000)) {
+            klog(aygit_adi(a) + ": denetleyici sıfırlanamadı");
+            don ENXIO;
+        }
+    }
+    upp.cekirdek.mmio_yaz32(h, AHCI_GHC, AHCI_GHC_AE);
+    sayi cap = upp.cekirdek.mmio_oku32(h, AHCI_CAP);
+    sayi pi = upp.cekirdek.mmio_oku32(h, AHCI_PI);
+    sayi vs = upp.cekirdek.mmio_oku32(h, AHCI_VS);
+    klog_sessiz(aygit_adi(a) + ": AHCI v{vs / 65536}.{(vs / 256) % 256}, {cap % 32 + 1} kapı, PI 0x" + onaltilik_dolgu(pi, 8));
+    dongu (sayi p = 0; p < 32; p += 1) {
+        eger ((pi / iki_ussu(p)) % 2 == 0) { devam; }
+        sayi c = aygit_ekle(a, "ahcich", -1);
+        aygit_degisken_koy(c, "kapi", p);
+        aygit_degisken_koy(c, "mmio", h);
+        aygit_degisken_koy(c, "genis", (cap & AHCI_CAP_S64A) != 0 ? 1 : 0);
+    }
+    veriyolu_cocuklari_bagla(a);
+    don 0;
+}
+
+fonk ahci_cocuk_konum(sayi c) -> metin => "channel={aygit_degisken(c, \"kapi\")}";
+
+// ---------------------------------------------------------------- ahcich (kapı)
+
+fonk ahcich_yokla(sayi a) -> sayi {
+    eger (!aygit_degisken_var(a, "kapi")) { don ENXIO; }
+    aygit_aciklama_koy(a, "AHCI kanalı");
+    don YOKLA_VARSAYILAN;
+}
+
+fonk ahcich_bagla(sayi a) -> sayi {
+    sayi kapi = aygit_degisken(a, "kapi");
+    AhciKapi kp;
+    kp.aygit = a;
+    kp.mmio = aygit_degisken(a, "mmio");
+    kp.taban = 0x100 + kapi * 0x80;
+    kp.genis = aygit_degisken(a, "genis") == 1;
+    kp.bellek = dma_ayir(AHCI_BELLEK, 1024);
+    sayi k = g_ahci_kapi.uzunluk();
+    g_ahci_kapi.ekle(kp);
+    eger (kp.bellek.fiziksel < 0 || !ahci_dogrudan_mi(k, kp.bellek.fiziksel, AHCI_BELLEK)) {
+        klog(aygit_adi(a) + ": DMA belleği ayrılamadı");
+        dma_birak(kp.bellek);
+        don ENXIO;
+    }
+    eger (!ahci_kapi_durdur(k)) {
+        klog(aygit_adi(a) + ": kapı durdurulamadı");
+        dma_birak(kp.bellek);
+        don ENXIO;
+    }
+    ahci_yaz_adres_kapi(k, AHCI_P_CLB, dma_fiziksel(kp.bellek, 0));
+    ahci_yaz_adres_kapi(k, AHCI_P_FB, dma_fiziksel(kp.bellek, AHCI_FIS_OFS));
+    ahci_kapi_yaz(k, AHCI_P_IE, 0);
+    ahci_kapi_yaz(k, AHCI_P_SERR, 0xFFFFFFFF);
+    ahci_kapi_yaz(k, AHCI_P_IS, 0xFFFFFFFF);
+    ahci_kapi_yaz(k, AHCI_P_CMD, ahci_kapi_oku(k, AHCI_P_CMD) | AHCI_CMD_SUD | AHCI_CMD_POD | AHCI_CMD_FRE);
+    // Bağlantı (SSTS.DET = 3) yoksa kanal boştur; FreeBSD gibi kanal yine de bağlı kalır.
+    eger (!ahci_kapi_bekle(k, AHCI_P_SSTS, 0xF, 3, 100)) { don 0; }
+    eger (!ahci_kapi_bekle(k, AHCI_P_TFD, AHCI_TFD_MESGUL, 0, 1000)) {
+        klog(aygit_adi(a) + ": aygıt hazır olmadı");
+        don 0;
+    }
+    sayi imza = ahci_kapi_oku(k, AHCI_P_SIG);
+    eger (imza != AHCI_IMZA_SATA) {
+        klog_sessiz(aygit_adi(a) + ": SATA disk değil (imza 0x" + onaltilik_dolgu(imza, 8) + ")");
+        don 0;
+    }
+    eger (!ahci_kapi_baslat(k)) {
+        klog(aygit_adi(a) + ": kapı başlatılamadı");
+        don 0;
+    }
+    g_ahci_kapi[k].etkin = dogru;
+    g_ahci_kapi[k].sektor = 1;
+    sayi sektor = ahci_tani_oku(k);
+    eger (sektor <= 0) {
+        klog(aygit_adi(a) + ": IDENTIFY başarısız");
+        g_ahci_kapi[k].etkin = yanlis;
+        don 0;
+    }
+    g_ahci_kapi[k].sektor = sektor;
+    disk_kaydet(a, k, g_ahci_kapi[k].model, sektor, ahci_disk_oku, ahci_disk_yaz);
+    don 0;
+}
+
+fonk ahci_yaz_adres_kapi(sayi k, sayi yazmac, sayi fiz) -> bos {
+    ahci_kapi_yaz(k, yazmac, fiz & 0xFFFFFFFF);
+    ahci_kapi_yaz(k, yazmac + 4, fiz / 0x100000000);
+}
+
+fonk ahcich_ayir(sayi a) -> sayi {
+    disk_sil(a);
+    dongu (sayi k = 0; k < g_ahci_kapi.uzunluk(); k += 1) {
+        eger (g_ahci_kapi[k].aygit != a || !g_ahci_kapi[k].etkin) { devam; }
+        g_ahci_kapi[k].etkin = yanlis;
+        // Motor durunca HBA artık belleğe yazmaz; bellek ancak o zaman bırakılır.
+        eger (ahci_kapi_durdur(k)) { dma_birak(g_ahci_kapi[k].bellek); }
+    }
+    don 0;
+}
+
+fonk ahci_kaydet() -> bos {
+    sayi s = surucu_kaydet("ahci", "pci", ahci_yokla, ahci_bagla, veriyolu_genel_ayir);
+    surucu_cocuk_bilgisi(s, ahci_cocuk_konum, yok);
+    surucu_kaydet("ahcich", "ahci", ahcich_yokla, ahcich_bagla, ahcich_ayir);
+}

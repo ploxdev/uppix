@@ -1,0 +1,56 @@
+// Çekirdek: Uppix AHCI (SATA) diskleriyle açılır. QEMU'da diskler ICH9 AHCI denetleyicisinin
+// kapılarındadır (--disk-arayuz ahci); Limine çekirdeği SATA diskinden yükler, kök ext4
+// SATA diskinden bağlanır. ahci sürücüsü ABAR'ı MMIO olarak açar, diskleri IDENTIFY ile
+// tanır ve READ/WRITE DMA EXT ile okur/yazar. Üç dosya sistemine yazılır; büyük dosya
+// birden çok DMA parçasıyla aktarılır. Sonra Linux araçlarıyla denetlenir.
+// @gerek: cc mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy mtype mkfs.exfat fsck.exfat
+// @hazirla: rm -rf tests/_cikti/ahci_img
+// @bayrak: --onyukleyici limine --disk-arayuz ahci --disk tests/_cikti/ahci_img/uppix.img --disk tests/_cikti/ahci_img/usb-fat32.img --disk tests/_cikti/ahci_img/usb-exfat.img --disk-hazirla disk_yap.sh
+// @girdi: pciconf -l | grep ahci
+// @girdi: pciconf -lv | grep SATA
+// @girdi: devinfo
+// @girdi: lsblk
+// @girdi: mount | grep sd
+// @girdi: echo "AHCI ext4 yazdı" > /root/ahci.txt && cat /root/ahci.txt
+// @girdi: seq 200000 > /root/buyuk.txt && wc -c /root/buyuk.txt && tail -n 1 /root/buyuk.txt
+// @girdi: echo "AHCI /boot yazdı" > /boot/ahci.txt
+// @girdi: echo "AHCI FAT32 yazdı" > /mnt/sdb1/ahci.txt && cat "/mnt/sdb1/Türkçe uzun dosya adı.txt"
+// @girdi: echo "AHCI exFAT yazdı" > /mnt/sdc/ahci.txt && cat /mnt/sdc/ahci.txt
+// @girdi: merhaba sata
+// @girdi: sync
+// @girdi: poweroff
+// @icerir: ahci0: <Intel ICH9 AHCI SATA denetleyicisi> pci0 üzerinde
+// @icerir: sda: <QEMU HARDDISK> 192M, ahcich0 üzerinde
+// @icerir: ahci0@pci0:0:4:0:	class=0x010601 rev=0x02 hdr=0x00 vendor=0x8086 device=0x2922
+// @icerir:     device     = '82801IR/IO/IH (ICH9R/DO/DH) 6 port SATA Controller [AHCI mode]'
+// @icerir:     ahci0
+// @icerir:       ahcich0
+// @icerir:       ahcich5
+// @icerir: ├─sda1    64M part  vfat   UPPIXBOOT        /boot
+// @icerir: └─sda2   127M part  ext4   uppix-kok        /
+// @icerir: └─sdb1    63M part  vfat   UPPIXUSB         /mnt/sdb1
+// @icerir: sdc       32M disk  exfat                   /mnt/sdc
+// @icerir: /dev/sda2 on / type ext4 (rw)
+// @icerir: AHCI ext4 yazdı
+// @icerir: 1288895 /root/buyuk.txt
+// @icerir: 200000
+// @icerir: Uzun ve Türkçe bir dosya adı: şğüöçı ŞĞÜÖÇİ
+// @icerir: AHCI exFAT yazdı
+// @icerir: sata
+// @icerir: Sistem kapatılıyor...
+// @denetle: dd if=tests/_cikti/ahci_img/uppix.img of=/tmp/upp_ahci_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_ahci_p2.img
+// @denetle: debugfs -R 'cat /root/ahci.txt' /tmp/upp_ahci_p2.img 2>/dev/null | grep -q 'AHCI ext4 yazdı'
+// @denetle: seq 200000 > /tmp/upp_ahci_seq.txt && debugfs -R 'cat /root/buyuk.txt' /tmp/upp_ahci_p2.img 2>/dev/null | cmp - /tmp/upp_ahci_seq.txt
+// @denetle: dd if=tests/_cikti/ahci_img/uppix.img of=/tmp/upp_ahci_p1.img bs=1M skip=1 count=64 status=none && fsck.fat -n /tmp/upp_ahci_p1.img
+// @denetle: mtype -i tests/_cikti/ahci_img/uppix.img@@1M ::/ahci.txt | grep -q 'AHCI /boot yazdı'
+// @denetle: dd if=tests/_cikti/ahci_img/usb-fat32.img of=/tmp/upp_ahci_usb.img bs=512 skip=2048 status=none && fsck.fat -n /tmp/upp_ahci_usb.img
+// @denetle: mtype -i tests/_cikti/ahci_img/usb-fat32.img@@1M ::/ahci.txt | grep -q 'AHCI FAT32 yazdı'
+// @denetle: fsck.exfat -n tests/_cikti/ahci_img/usb-exfat.img
+// @denetle: rm -f /tmp/upp_ahci_p1.img /tmp/upp_ahci_p2.img /tmp/upp_ahci_usb.img /tmp/upp_ahci_seq.txt
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}
