@@ -30,6 +30,8 @@ kullan "sistem_cagrisi.upp";
 kullan "sistem_cagrisi_dosya.upp";
 kullan "sistem_cagrisi_surec.upp";
 kullan "sistem_cagrisi_girdi.upp";
+kullan "sistem_cagrisi_soket.upp";
+kullan "sistem_cagrisi_hazir.upp";
 
 sabit metin UPPIX_SURUM = "0.4.0";
 

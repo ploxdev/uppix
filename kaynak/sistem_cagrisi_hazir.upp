@@ -1,0 +1,828 @@
+// Uppix — hazırlık modeli ve olay tanımlayıcıları (Linux x86_64).
+// fd_hazir her tanımlayıcı türü için okunabilir/yazılabilir/HUP/ERR durumunu tek yerden
+// verir (Linux poll maskesi). Üstünde poll, ppoll, select, pselect6 ve epoll
+// (epoll_create/create1, epoll_ctl, epoll_wait/pwait; seviye tetiklemeli, EPOLLET ve
+// EPOLLONESHOT) kuruludur. eventfd/eventfd2, timerfd_create/settime/gettime,
+// setitimer/getitimer/alarm (ITIMER_REAL dolunca SIGALRM'ın varsayılan eylemi) ve
+// pause da buradadır. Beklemeler sıra vererek yapılır, zaman aşımına uyar, ön planda
+// Ctrl-C ile EINTR döner.
+
+sabit sayi POLLIN = 1;
+sabit sayi POLLPRI = 2;
+sabit sayi POLLOUT = 4;
+sabit sayi POLLERR = 8;
+sabit sayi POLLHUP = 16;
+sabit sayi POLLNVAL = 32;
+sabit sayi POLLRDNORM = 64;
+sabit sayi POLLWRNORM = 256;
+sabit sayi POLLRDHUP = 0x2000;
+sabit sayi EPOLLEXCLUSIVE = 0x10000000;
+sabit sayi EPOLLONESHOT = 0x40000000;
+sabit sayi EPOLLET = 0x80000000;
+sabit sayi FIONREAD = 0x541B;
+sabit sayi SIGALRM = 14;
+
+// ---------------------------------------------------------------- nesneler
+
+// epoll örneği: her kayıt (sahip süreç yuvası, fd) ve izlenen olaylar, kullanıcı verisi
+// (u64), EPOLLET için son bildirilen maske ve kuşak, EPOLLONESHOT'ta uyutulmuş mu.
+sinif Epoll {
+    mantik etkin;
+    sayi ref;
+    liste[sayi] sahip;
+    liste[sayi] fd;
+    liste[sayi] olay;
+    liste[sayi] veri;
+    liste[sayi] son_m;
+    liste[sayi] son_k;
+    liste[mantik] uyuyan;
+}
+
+sinif Sayac {
+    mantik etkin;
+    sayi ref;
+    sayi deger;
+    mantik semafor;
+    sayi kusak;
+}
+
+// timerfd: son = dolacağı an (upp.zaman ölçeğinde, ms; 0 kurulu değil), aralik ms,
+// dolan = okunmamış dolma sayısı.
+sinif Zamanlayici {
+    mantik etkin;
+    sayi ref;
+    sayi saat;
+    sayi son;
+    sayi aralik;
+    sayi dolan;
+    sayi kusak;
+}
+
+liste[Epoll] g_epoll;
+liste[Sayac] g_sayac;
+liste[Zamanlayici] g_zamanlayici;
+
+fonk hazir_nesne_al(sayi tur, sayi no) -> bos {
+    eger (tur == FD_EPOLL) { g_epoll[no].ref += 1; }
+    eger (tur == FD_EVENTFD) { g_sayac[no].ref += 1; }
+    eger (tur == FD_TIMERFD) { g_zamanlayici[no].ref += 1; }
+}
+
+fonk hazir_nesne_birak(sayi tur, sayi no) -> bos {
+    eger (tur == FD_EPOLL) {
+        g_epoll[no].ref -= 1;
+        eger (g_epoll[no].ref <= 0) { g_epoll[no].etkin = yanlis; }
+    }
+    eger (tur == FD_EVENTFD) {
+        g_sayac[no].ref -= 1;
+        eger (g_sayac[no].ref <= 0) { g_sayac[no].etkin = yanlis; }
+    }
+    eger (tur == FD_TIMERFD) {
+        g_zamanlayici[no].ref -= 1;
+        eger (g_zamanlayici[no].ref <= 0) { g_zamanlayici[no].etkin = yanlis; }
+    }
+}
+
+fonk epoll_yeni() -> sayi {
+    Epoll e;
+    e.etkin = dogru;
+    her (sayi i in 0..g_epoll.uzunluk()) {
+        eger (!g_epoll[i].etkin) {
+            g_epoll.yaz(i, e);
+            don i;
+        }
+    }
+    g_epoll.ekle(e);
+    don g_epoll.uzunluk() - 1;
+}
+
+fonk sayac_yeni(sayi deger, mantik semafor) -> sayi {
+    Sayac c;
+    c.etkin = dogru;
+    c.deger = deger;
+    c.semafor = semafor;
+    her (sayi i in 0..g_sayac.uzunluk()) {
+        eger (!g_sayac[i].etkin) {
+            g_sayac.yaz(i, c);
+            don i;
+        }
+    }
+    g_sayac.ekle(c);
+    don g_sayac.uzunluk() - 1;
+}
+
+fonk zamanlayici_yeni(sayi saat) -> sayi {
+    Zamanlayici z;
+    z.etkin = dogru;
+    z.saat = saat;
+    her (sayi i in 0..g_zamanlayici.uzunluk()) {
+        eger (!g_zamanlayici[i].etkin) {
+            g_zamanlayici.yaz(i, z);
+            don i;
+        }
+    }
+    g_zamanlayici.ekle(z);
+    don g_zamanlayici.uzunluk() - 1;
+}
+
+// ---------------------------------------------------------------- terminal satır düzeni
+
+// Tuşlar sürecin yarım satırına (satir_parca) işlenir: satır sonu satırı tamamlar
+// (satir_artik), boş satırda Ctrl-D EOF'tur (satir_eof). Dönüş: 1 satır hazır, 0 devam,
+// -1 Ctrl-C.
+fonk tty_tus_isle(sayi s, sayi c) -> sayi {
+    eger (c == 3) { don -1; }
+    eger (c == 4) {
+        eger (g_surec[s].satir_parca == "") {
+            g_surec[s].satir_eof = dogru;
+            don 1;
+        }
+        don 0;
+    }
+    eger (c == '\r' || c == '\n') {
+        terminale_yaz("\n");
+        g_surec[s].satir_artik += g_surec[s].satir_parca + "\n";
+        g_surec[s].satir_parca = "";
+        don 1;
+    }
+    eger (c == 8 || c == 127) {
+        metin p = g_surec[s].satir_parca;
+        eger (upp.uzunluk(p) > 0) {
+            g_surec[s].satir_parca = upp.metin.kes(p, 0, upp.uzunluk(p) - 1);
+            terminale_yaz("\x08 \x08");
+        }
+        don 0;
+    }
+    metin k = upp.metin.karakter(c);
+    g_surec[s].satir_parca += k;
+    eger (c == 27) { terminale_yaz("^["); } yoksa { terminale_yaz(k); }
+    don 0;
+}
+
+// Bekleyen tuş (beklemeden); yoksa 0.
+fonk tty_tus_engelsiz() -> sayi {
+    eger (g_bekleyen.uzunluk() > 0) {
+        sayi c = g_bekleyen[0];
+        g_bekleyen.sil(0);
+        don c;
+    }
+    don upp.cekirdek.tus_oku();
+}
+
+mantik g_hazir_kesme = yanlis;
+
+// Terminal okunabilir mi: K_RAW/K_MEDIUMRAW'da ham bayt, kanonik kipte tam satır ya da
+// EOF. Tuşlar yalnızca ön plandaki süreç için işlenir. Ctrl-C g_hazir_kesme'yi kurar.
+fonk tty_okunabilir(sayi s) -> mantik {
+    eger (g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) {
+        girdi_topla();
+        don g_tty_ham.uzunluk() > 0;
+    }
+    eger (sc_on_planda(s)) {
+        iken (g_surec[s].satir_artik == "" && !g_surec[s].satir_eof) {
+            sayi c = tty_tus_engelsiz();
+            eger (c == 0) { dur; }
+            eger (tty_tus_isle(s, c) < 0) {
+                g_hazir_kesme = dogru;
+                dur;
+            }
+        }
+    }
+    don g_surec[s].satir_artik != "" || g_surec[s].satir_eof;
+}
+
+// ---------------------------------------------------------------- hazırlık
+
+fonk fd_hazir(sayi s, sayi fd, sayi derinlik) -> sayi {
+    eger (!fd_gecerli(s, fd)) { don POLLNVAL; }
+    sayi y = fd_yer(s, fd);
+    sayi tur = g_fd_tur[y];
+    sayi no = g_fd_no[y];
+    sayi m = 0;
+    eger (tur == FD_DOSYA || tur == FD_DIZIN || tur == FD_NULL || tur == FD_FB) {
+        m = POLLIN | POLLOUT;
+    } yoksa eger (tur == FD_GIRDI) {
+        eger (g_surec[s].girdi_konum < bayt_say(g_surec[s].girdi)) { m = POLLIN; } yoksa { m = POLLHUP; }
+    } yoksa eger (tur == FD_TERMINAL) {
+        m = POLLOUT;
+        eger (tty_okunabilir(s)) { m = m | POLLIN; }
+    } yoksa eger (tur == FD_BORU_OKU) {
+        eger (g_boru[no].dolu > 0) { m = POLLIN; }
+        eger (g_boru[no].yazici <= 0) { m = m | POLLHUP; }
+    } yoksa eger (tur == FD_BORU_YAZ) {
+        eger (BORU_BOY - g_boru[no].dolu >= BORU_BOLUNMEZ) { m = POLLOUT; }
+        eger (g_boru[no].okuyucu <= 0) { m = m | POLLERR; }
+    } yoksa eger (tur == FD_OLAY) {
+        m = POLLOUT;
+        eger (olay_hazir_mi(no)) { m = m | POLLIN; }
+    } yoksa eger (tur == FD_SOKET) {
+        m = soket_hazir(no);
+    } yoksa eger (tur == FD_EPOLL) {
+        eger (epoll_hazir_mi(no, derinlik)) { m = POLLIN; }
+    } yoksa eger (tur == FD_EVENTFD) {
+        u64 d = (u64)g_sayac[no].deger;
+        eger (d > 0u64) { m = POLLIN; }
+        eger (d == 18446744073709551615u64) { m = m | POLLERR; }
+        eger (d < 18446744073709551614u64) { m = m | POLLOUT; }
+    } yoksa eger (tur == FD_TIMERFD) {
+        zamanlayici_isle(no);
+        eger (g_zamanlayici[no].dolan > 0) { m = POLLIN; }
+    }
+    eger ((m & POLLIN) != 0) { m = m | POLLRDNORM; }
+    eger ((m & POLLOUT) != 0) { m = m | POLLWRNORM; }
+    don m;
+}
+
+// EPOLLET için olay kuşağı: veri geldikçe ya da tüketildikçe değişir.
+fonk fd_kusak(sayi s, sayi fd) -> sayi {
+    sayi y = fd_yer(s, fd);
+    sayi tur = g_fd_tur[y];
+    sayi no = g_fd_no[y];
+    eger (tur == FD_BORU_OKU || tur == FD_BORU_YAZ) { don g_boru[no].kusak; }
+    eger (tur == FD_SOKET) { don g_soket[no].kusak; }
+    eger (tur == FD_EVENTFD) { don g_sayac[no].kusak; }
+    eger (tur == FD_TIMERFD) { don g_zamanlayici[no].kusak; }
+    eger (tur == FD_OLAY) { don g_girdi[no].bas + g_girdi[no].kuyruk.uzunluk(); }
+    eger (tur == FD_TERMINAL) { don bayt_say(g_surec[s].satir_artik); }
+    don 0;
+}
+
+// Bekleme bitiş anı: ms < 0 sonsuz (-1).
+fonk bitis_ani(sayi ms) -> sayi {
+    eger (ms < 0) { don -1; }
+    don upp.zaman() + ms;
+}
+
+fonk sure_doldu(sayi bitis) -> mantik => bitis >= 0 && upp.zaman() >= bitis;
+
+// timespec → ms (yukarı yuvarlanır); geçersizse -1 ve g_sc_hata -EINVAL / -EFAULT.
+fonk sc_timespec_ms(sayi s, sayi adres, mantik mikro) -> sayi {
+    g_sc_hata = 0;
+    sayi t = upp.tampon.yeni(16);
+    ertele upp.tampon.birak(t);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, adres, t, 0, 16)) {
+        g_sc_hata = -EFAULT;
+        don -1;
+    }
+    sayi sn = upp.tampon.oku64(t, 0);
+    sayi kesir = upp.tampon.oku64(t, 8);
+    sayi tavan = 1000000000;
+    sayi bolen = 1000000;
+    eger (mikro) {
+        tavan = 1000000;
+        bolen = 1000;
+    }
+    eger (sn < 0 || kesir < 0 || kesir >= tavan) {
+        g_sc_hata = -EINVAL;
+        don -1;
+    }
+    don sn * 1000 + (kesir + bolen - 1) / bolen;
+}
+
+// Kalan süreyi geri yazar (select, ppoll, pselect6 Linux'taki gibi günceller).
+fonk sc_kalan_yaz(sayi s, sayi adres, sayi bitis, mantik mikro) -> bos {
+    eger (adres == 0 || bitis < 0) { don; }
+    sayi kalan = upp.max(bitis - upp.zaman(), 0);
+    sayi t = upp.tampon.yeni(16);
+    upp.tampon.yaz64(t, 0, kalan / 1000);
+    eger (mikro) { upp.tampon.yaz64(t, 8, kalan % 1000 * 1000); } yoksa { upp.tampon.yaz64(t, 8, kalan % 1000 * 1000000); }
+    sc_yapi_ver(s, adres, t, 16);
+}
+
+// ---------------------------------------------------------------- poll, ppoll
+
+fonk sc_poll(sayi s, sayi adres, sayi n, sayi bitis) -> sayi {
+    eger (n < 0 || n > 1024) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(upp.max(n * 8, 1));
+    ertele upp.tampon.birak(t);
+    eger (n > 0 && !upp.cekirdek.kullanici_oku(g_surec[s].ka, adres, t, 0, n * 8)) { don -EFAULT; }
+    sayi say = 0;
+    iken (dogru) {
+        say = 0;
+        her (sayi i in 0..n) {
+            sayi fd = isaretli32(upp.tampon.oku32(t, i * 8));
+            sayi istenen = upp.tampon.oku16(t, i * 8 + 4);
+            sayi gelen = 0;
+            eger (fd >= 0) { gelen = fd_hazir(s, fd, 0) & (istenen | POLLERR | POLLHUP | POLLNVAL); }
+            upp.tampon.yaz16(t, i * 8 + 6, gelen);
+            eger (gelen != 0) { say += 1; }
+        }
+        eger (g_hazir_kesme) {
+            g_hazir_kesme = yanlis;
+            don sc_kesme(s);
+        }
+        eger (say > 0 || sure_doldu(bitis)) { dur; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    eger (n > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, adres, t, 0, n * 8)) { don -EFAULT; }
+    don say;
+}
+
+fonk sc_ppoll(sayi s, sayi adres, sayi n, sayi ts, sayi maske, sayi maske_boy) -> sayi {
+    eger (maske != 0 && maske_boy != 8) { don -EINVAL; }
+    sayi bitis = -1;
+    eger (ts != 0) {
+        sayi ms = sc_timespec_ms(s, ts, yanlis);
+        eger (ms < 0) { don g_sc_hata; }
+        bitis = upp.zaman() + ms;
+    }
+    sayi r = sc_poll(s, adres, n, bitis);
+    sc_kalan_yaz(s, ts, bitis, yanlis);
+    don r;
+}
+
+// ---------------------------------------------------------------- select, pselect6
+
+fonk sc_select(sayi s, sayi n, sayi oku_adr, sayi yaz_adr, sayi ist_adr, sayi bitis) -> sayi {
+    eger (n < 0) { don -EINVAL; }
+    eger (n > 1024) { n = 1024; }
+    sayi bayt_n = (n + 63) / 64 * 8;
+    sayi ka = g_surec[s].ka;
+    sayi giris = upp.tampon.yeni(upp.max(bayt_n * 3, 8));
+    sayi cikis = upp.tampon.yeni(upp.max(bayt_n * 3, 8));
+    ertele upp.tampon.birak(giris);
+    ertele upp.tampon.birak(cikis);
+    sayi adresler[3];
+    adresler[0] = oku_adr;
+    adresler[1] = yaz_adr;
+    adresler[2] = ist_adr;
+    her (sayi k in 0..3) {
+        eger (adresler[k] != 0 && bayt_n > 0 && !upp.cekirdek.kullanici_oku(ka, adresler[k], giris, k * bayt_n, bayt_n)) { don -EFAULT; }
+    }
+    // istenen her tanımlayıcı geçerli olmalı
+    her (sayi fd in 0..n) {
+        sayi bit = iki_ussu(fd % 8);
+        mantik var = yanlis;
+        her (sayi k in 0..3) {
+            eger ((upp.tampon.oku8(giris, k * bayt_n + fd / 8) & bit) != 0) { var = dogru; }
+        }
+        eger (var && !fd_gecerli(s, fd)) { don -EBADF; }
+    }
+    sayi say = 0;
+    iken (dogru) {
+        say = 0;
+        upp.tampon.doldur(cikis, 0, bayt_n * 3, 0);
+        her (sayi fd in 0..n) {
+            sayi bit = iki_ussu(fd % 8);
+            sayi o = fd / 8;
+            mantik ist_r = (upp.tampon.oku8(giris, o) & bit) != 0;
+            mantik ist_w = (upp.tampon.oku8(giris, bayt_n + o) & bit) != 0;
+            mantik ist_e = (upp.tampon.oku8(giris, 2 * bayt_n + o) & bit) != 0;
+            eger (!ist_r && !ist_w && !ist_e) { devam; }
+            sayi m = fd_hazir(s, fd, 0);
+            eger (ist_r && (m & (POLLIN | POLLHUP | POLLERR)) != 0) {
+                upp.tampon.yaz8(cikis, o, upp.tampon.oku8(cikis, o) | bit);
+                say += 1;
+            }
+            eger (ist_w && (m & (POLLOUT | POLLERR)) != 0) {
+                upp.tampon.yaz8(cikis, bayt_n + o, upp.tampon.oku8(cikis, bayt_n + o) | bit);
+                say += 1;
+            }
+            eger (ist_e && (m & POLLPRI) != 0) {
+                upp.tampon.yaz8(cikis, 2 * bayt_n + o, upp.tampon.oku8(cikis, 2 * bayt_n + o) | bit);
+                say += 1;
+            }
+        }
+        eger (g_hazir_kesme) {
+            g_hazir_kesme = yanlis;
+            don sc_kesme(s);
+        }
+        eger (say > 0 || sure_doldu(bitis)) { dur; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    her (sayi k in 0..3) {
+        eger (adresler[k] != 0 && bayt_n > 0 && !upp.cekirdek.kullanici_yaz(ka, adresler[k], cikis, k * bayt_n, bayt_n)) { don -EFAULT; }
+    }
+    don say;
+}
+
+fonk sc_select_tv(sayi s, sayi n, sayi r, sayi w, sayi e, sayi tv) -> sayi {
+    sayi bitis = -1;
+    eger (tv != 0) {
+        sayi ms = sc_timespec_ms(s, tv, dogru);
+        eger (ms < 0) { don g_sc_hata; }
+        bitis = upp.zaman() + ms;
+    }
+    sayi sonuc = sc_select(s, n, r, w, e, bitis);
+    sc_kalan_yaz(s, tv, bitis, dogru);
+    don sonuc;
+}
+
+fonk sc_pselect6(sayi s, sayi n, sayi r, sayi w, sayi e, sayi ts) -> sayi {
+    sayi bitis = -1;
+    eger (ts != 0) {
+        sayi ms = sc_timespec_ms(s, ts, yanlis);
+        eger (ms < 0) { don g_sc_hata; }
+        bitis = upp.zaman() + ms;
+    }
+    sayi sonuc = sc_select(s, n, r, w, e, bitis);
+    sc_kalan_yaz(s, ts, bitis, yanlis);
+    don sonuc;
+}
+
+// ---------------------------------------------------------------- epoll
+
+sabit sayi EPOLL_CLOEXEC = 524288;
+
+fonk sc_epoll_create(sayi s, sayi bayrak) -> sayi {
+    eger ((bayrak & (0xFFFFFFFF - EPOLL_CLOEXEC)) != 0) { don -EINVAL; }
+    sayi fd = fd_ayir(s);
+    eger (fd < 0) { don -EMFILE; }
+    fd_kur(s, fd, FD_EPOLL, epoll_yeni(), 2 | bayrak);
+    don fd;
+}
+
+fonk epoll_kayit(sayi e, sayi s, sayi fd) -> sayi {
+    her (sayi i in 0..g_epoll[e].fd.uzunluk()) {
+        eger (g_epoll[e].sahip[i] == s && g_epoll[e].fd[i] == fd) { don i; }
+    }
+    don -1;
+}
+
+fonk epoll_kayit_sil(sayi e, sayi i) -> bos {
+    g_epoll[e].sahip.sil(i);
+    g_epoll[e].fd.sil(i);
+    g_epoll[e].olay.sil(i);
+    g_epoll[e].veri.sil(i);
+    g_epoll[e].son_m.sil(i);
+    g_epoll[e].son_k.sil(i);
+    g_epoll[e].uyuyan.sil(i);
+}
+
+// struct epoll_event (paketli, 12 bayt): u32 events, u64 data.
+fonk sc_epoll_ctl(sayi s, sayi epfd, sayi islem, sayi fd, sayi olay_adr) -> sayi {
+    eger (!fd_gecerli(s, epfd) || !fd_gecerli(s, fd)) { don -EBADF; }
+    sayi y = fd_yer(s, epfd);
+    eger (g_fd_tur[y] != FD_EPOLL || fd == epfd) { don -EINVAL; }
+    sayi hedef_tur = g_fd_tur[fd_yer(s, fd)];
+    // sıradan dosya ve dizin poll desteklemez
+    eger (hedef_tur == FD_DOSYA || hedef_tur == FD_DIZIN) { don -EPERM; }
+    sayi e = g_fd_no[y];
+    sayi olaylar = 0;
+    sayi veri = 0;
+    eger (islem == 1 || islem == 3) {
+        sayi t = upp.tampon.yeni(12);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, olay_adr, t, 0, 12);
+        olaylar = upp.tampon.oku32(t, 0);
+        veri = upp.tampon.oku64(t, 4);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+    }
+    sayi i = epoll_kayit(e, s, fd);
+    eger (islem == 1) {
+        eger (i >= 0) { don -EEXIST; }
+        g_epoll[e].sahip.ekle(s);
+        g_epoll[e].fd.ekle(fd);
+        g_epoll[e].olay.ekle(olaylar);
+        g_epoll[e].veri.ekle(veri);
+        g_epoll[e].son_m.ekle(0);
+        g_epoll[e].son_k.ekle(-1);
+        g_epoll[e].uyuyan.ekle(yanlis);
+        don 0;
+    }
+    eger (islem == 2) {
+        eger (i < 0) { don -ENOENT; }
+        epoll_kayit_sil(e, i);
+        don 0;
+    }
+    eger (islem == 3) {
+        eger (i < 0) { don -ENOENT; }
+        eger ((olaylar & EPOLLEXCLUSIVE) != 0) { don -EINVAL; }
+        g_epoll[e].olay[i] = olaylar;
+        g_epoll[e].veri[i] = veri;
+        g_epoll[e].son_m[i] = 0;
+        g_epoll[e].son_k[i] = -1;
+        g_epoll[e].uyuyan[i] = yanlis;
+        don 0;
+    }
+    don -EINVAL;
+}
+
+// Kaydın şu anki olayları (bildirilecekse, EPOLLET/ONESHOT durumu değiştirilmeden).
+fonk epoll_kayit_olay(sayi e, sayi i, sayi derinlik) -> sayi {
+    eger (g_epoll[e].uyuyan[i]) { don 0; }
+    sayi s = g_epoll[e].sahip[i];
+    sayi fd = g_epoll[e].fd[i];
+    eger (s < 0 || s >= g_surec.uzunluk() || g_surec[s].pid == 0 || !fd_gecerli(s, fd)) { don 0; }
+    sayi hazir = fd_hazir(s, fd, derinlik + 1) & (g_epoll[e].olay[i] | POLLERR | POLLHUP);
+    eger (hazir == 0) { don 0; }
+    eger ((g_epoll[e].olay[i] & EPOLLET) != 0) {
+        sayi yeni_bit = hazir - (hazir & g_epoll[e].son_m[i]);
+        eger (yeni_bit == 0 && fd_kusak(s, fd) == g_epoll[e].son_k[i]) { don 0; }
+    }
+    don hazir;
+}
+
+fonk epoll_hazir_mi(sayi e, sayi derinlik) -> mantik {
+    eger (derinlik > 4) { don yanlis; }
+    her (sayi i in 0..g_epoll[e].fd.uzunluk()) {
+        eger (epoll_kayit_olay(e, i, derinlik) != 0) { don dogru; }
+    }
+    don yanlis;
+}
+
+fonk sc_epoll_wait(sayi s, sayi epfd, sayi adres, sayi en_cok, sayi bitis) -> sayi {
+    eger (!fd_gecerli(s, epfd)) { don -EBADF; }
+    sayi y = fd_yer(s, epfd);
+    eger (g_fd_tur[y] != FD_EPOLL) { don -EINVAL; }
+    eger (en_cok <= 0 || en_cok > 178956970) { don -EINVAL; }
+    sayi e = g_fd_no[y];
+    iken (dogru) {
+        // kapanmış tanımlayıcıların kayıtları düşer (Linux'ta son kapanışta kalkar)
+        sayi i = 0;
+        iken (i < g_epoll[e].fd.uzunluk()) {
+            sayi ks = g_epoll[e].sahip[i];
+            eger (ks < 0 || ks >= g_surec.uzunluk() || g_surec[ks].pid == 0 || !fd_gecerli(ks, g_epoll[e].fd[i])) {
+                epoll_kayit_sil(e, i);
+            } yoksa {
+                i += 1;
+            }
+        }
+        sayi t = upp.tampon.yeni(upp.min(en_cok, g_epoll[e].fd.uzunluk() + 1) * 12);
+        sayi say = 0;
+        her (sayi j in 0..g_epoll[e].fd.uzunluk()) {
+            eger (say >= en_cok) { dur; }
+            sayi olay = epoll_kayit_olay(e, j, 0);
+            sayi ks = g_epoll[e].sahip[j];
+            sayi kfd = g_epoll[e].fd[j];
+            eger (olay == 0) {
+                // EPOLLET: hazır değilken unutulur, sonraki hazırlık yeni olaydır
+                eger (fd_gecerli(ks, kfd) && (fd_hazir(ks, kfd, 1) & g_epoll[e].olay[j]) == 0) { g_epoll[e].son_m[j] = 0; }
+                devam;
+            }
+            upp.tampon.yaz32(t, say * 12, olay & 0xFFFFFFFF);
+            upp.tampon.yaz64(t, say * 12 + 4, g_epoll[e].veri[j]);
+            say += 1;
+            g_epoll[e].son_m[j] = olay;
+            g_epoll[e].son_k[j] = fd_kusak(ks, kfd);
+            eger ((g_epoll[e].olay[j] & EPOLLONESHOT) != 0) { g_epoll[e].uyuyan[j] = dogru; }
+        }
+        eger (g_hazir_kesme) {
+            g_hazir_kesme = yanlis;
+            upp.tampon.birak(t);
+            don sc_kesme(s);
+        }
+        eger (say > 0 || sure_doldu(bitis)) {
+            eger (say > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, adres, t, 0, say * 12)) {
+                upp.tampon.birak(t);
+                don -EFAULT;
+            }
+            upp.tampon.birak(t);
+            don say;
+        }
+        upp.tampon.birak(t);
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    don 0;
+}
+
+// ---------------------------------------------------------------- eventfd
+
+sabit sayi EFD_SEMAPHORE = 1;
+
+fonk sc_eventfd(sayi s, sayi ilk, sayi bayrak) -> sayi {
+    eger ((bayrak & (0xFFFFFFFF - EFD_SEMAPHORE - O_CLOEXEC - O_NONBLOCK)) != 0) { don -EINVAL; }
+    sayi fd = fd_ayir(s);
+    eger (fd < 0) { don -EMFILE; }
+    fd_kur(s, fd, FD_EVENTFD, sayac_yeni(ilk & 0xFFFFFFFF, (bayrak & EFD_SEMAPHORE) != 0), 2 | (bayrak & (O_CLOEXEC | O_NONBLOCK)));
+    don fd;
+}
+
+fonk sayac_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    eger (n < 8) { don -EINVAL; }
+    sayi c = g_fd_no[y];
+    iken (g_sayac[c].deger == 0) {
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi v = g_sayac[c].deger;
+    eger (g_sayac[c].semafor) { v = 1; }
+    sayi t = upp.tampon.yeni(8);
+    upp.tampon.yaz64(t, 0, v);
+    eger (sc_yapi_ver(s, buf, t, 8) < 0) { don -EFAULT; }
+    g_sayac[c].deger -= v;
+    g_sayac[c].kusak += 1;
+    don 8;
+}
+
+fonk sayac_yaz(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    eger (n < 8) { don -EINVAL; }
+    sayi c = g_fd_no[y];
+    sayi t = upp.tampon.yeni(8);
+    mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, buf, t, 0, 8);
+    sayi v = upp.tampon.oku64(t, 0);
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    eger (v == -1) { don -EINVAL; }
+    // sayaç en çok 0xfffffffffffffffe olur; taşacaksa beklenir
+    iken ((u64)v > 18446744073709551614u64 - (u64)g_sayac[c].deger) {
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    g_sayac[c].deger = (sayi)((u64)g_sayac[c].deger + (u64)v);
+    g_sayac[c].kusak += 1;
+    don 8;
+}
+
+// ---------------------------------------------------------------- timerfd
+
+sabit sayi TFD_TIMER_ABSTIME = 1;
+sabit sayi TFD_TIMER_CANCEL_ON_SET = 2;
+
+fonk sc_timerfd_create(sayi s, sayi saat, sayi bayrak) -> sayi {
+    eger (saat != 0 && saat != 1 && saat != 7 && saat != 8 && saat != 9) { don -EINVAL; }
+    eger ((bayrak & (0xFFFFFFFF - O_CLOEXEC - O_NONBLOCK)) != 0) { don -EINVAL; }
+    sayi fd = fd_ayir(s);
+    eger (fd < 0) { don -EMFILE; }
+    fd_kur(s, fd, FD_TIMERFD, zamanlayici_yeni(saat), 2 | bayrak);
+    don fd;
+}
+
+// Geçen dolmaları sayar (aralıklıysa yeniden kurar).
+fonk zamanlayici_isle(sayi z) -> bos {
+    sayi son = g_zamanlayici[z].son;
+    sayi simdiki = upp.zaman();
+    eger (son <= 0 || simdiki < son) { don; }
+    sayi aralik = g_zamanlayici[z].aralik;
+    eger (aralik > 0) {
+        sayi k = 1 + (simdiki - son) / aralik;
+        g_zamanlayici[z].dolan += k;
+        g_zamanlayici[z].son = son + k * aralik;
+    } yoksa {
+        g_zamanlayici[z].dolan += 1;
+        g_zamanlayici[z].son = 0;
+    }
+    g_zamanlayici[z].kusak += 1;
+}
+
+fonk timerfd_bul(sayi s, sayi fd) -> sayi {
+    eger (!fd_gecerli(s, fd)) { don -EBADF; }
+    sayi y = fd_yer(s, fd);
+    eger (g_fd_tur[y] != FD_TIMERFD) { don -EINVAL; }
+    don g_fd_no[y];
+}
+
+// struct itimerspec { it_interval; it_value } (timespec'ler, 32 bayt)
+fonk zamanlayici_durum_yaz(sayi s, sayi z, sayi adres) -> sayi {
+    zamanlayici_isle(z);
+    sayi t = upp.tampon.yeni(32);
+    sayi aralik = g_zamanlayici[z].aralik;
+    upp.tampon.yaz64(t, 0, aralik / 1000);
+    upp.tampon.yaz64(t, 8, aralik % 1000 * 1000000);
+    eger (g_zamanlayici[z].son > 0) {
+        // saat ms çözünürlüğündedir; Linux'taki gibi kalan, kurulandan hep biraz azdır
+        sayi kalan_ns = upp.max(g_zamanlayici[z].son - upp.zaman(), 1) * 1000000 - 1;
+        upp.tampon.yaz64(t, 16, kalan_ns / 1000000000);
+        upp.tampon.yaz64(t, 24, kalan_ns % 1000000000);
+    }
+    don sc_yapi_ver(s, adres, t, 32);
+}
+
+fonk sc_timerfd_settime(sayi s, sayi fd, sayi bayrak, sayi yeni, sayi eski) -> sayi {
+    sayi z = timerfd_bul(s, fd);
+    eger (z < 0) { don z; }
+    eger ((bayrak & (0xFFFFFFFF - TFD_TIMER_ABSTIME - TFD_TIMER_CANCEL_ON_SET)) != 0) { don -EINVAL; }
+    sayi aralik = sc_timespec_ms(s, yeni, yanlis);
+    eger (aralik < 0) { don g_sc_hata; }
+    sayi deger = sc_timespec_ms(s, yeni + 16, yanlis);
+    eger (deger < 0) { don g_sc_hata; }
+    eger (eski != 0) {
+        sayi r = zamanlayici_durum_yaz(s, z, eski);
+        eger (r < 0) { don r; }
+    }
+    g_zamanlayici[z].dolan = 0;
+    g_zamanlayici[z].aralik = aralik;
+    eger (deger == 0) {
+        g_zamanlayici[z].son = 0;
+        g_zamanlayici[z].aralik = 0;
+        don 0;
+    }
+    sayi simdiki = upp.zaman();
+    eger ((bayrak & TFD_TIMER_ABSTIME) != 0) {
+        g_zamanlayici[z].son = upp.max(simdiki + (deger - saat_ms(g_zamanlayici[z].saat)), simdiki);
+    } yoksa {
+        g_zamanlayici[z].son = simdiki + deger;
+    }
+    // upp.zaman 0'dan başlar: kurulu zamanlayıcının son anı 0 olmasın
+    eger (g_zamanlayici[z].son <= 0) { g_zamanlayici[z].son = 1; }
+    don 0;
+}
+
+fonk sc_timerfd_gettime(sayi s, sayi fd, sayi adres) -> sayi {
+    sayi z = timerfd_bul(s, fd);
+    eger (z < 0) { don z; }
+    don zamanlayici_durum_yaz(s, z, adres);
+}
+
+fonk zamanlayici_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    eger (n < 8) { don -EINVAL; }
+    sayi z = g_fd_no[y];
+    iken (dogru) {
+        zamanlayici_isle(z);
+        eger (g_zamanlayici[z].dolan > 0) { dur; }
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi t = upp.tampon.yeni(8);
+    upp.tampon.yaz64(t, 0, g_zamanlayici[z].dolan);
+    eger (sc_yapi_ver(s, buf, t, 8) < 0) { don -EFAULT; }
+    g_zamanlayici[z].dolan = 0;
+    g_zamanlayici[z].kusak += 1;
+    don 8;
+}
+
+// ---------------------------------------------------------------- setitimer, alarm, pause
+
+// ITIMER_REAL dolduysa SIGALRM: varsayılan eylem süreci bitirir. Dönüş: süreç bitiyor mu.
+fonk sc_alarm_denetle(sayi s) -> mantik {
+    sayi son = g_surec[s].alarm_son;
+    eger (son <= 0 || upp.zaman() < son) { don yanlis; }
+    sayi aralik = g_surec[s].alarm_aralik;
+    eger (aralik > 0) {
+        iken (g_surec[s].alarm_son <= upp.zaman()) { g_surec[s].alarm_son += aralik; }
+    } yoksa {
+        g_surec[s].alarm_son = 0;
+    }
+    eger (sinyal_yok_sayilir(s, SIGALRM)) { don yanlis; }
+    sinyal_gonder(s, s, SIGALRM);
+    don dogru;
+}
+
+// struct itimerval { it_interval; it_value } (timeval'lar, 32 bayt)
+fonk itimer_yaz(sayi s, sayi hangi, sayi adres) -> sayi {
+    sayi t = upp.tampon.yeni(32);
+    eger (hangi == 0 && g_surec[s].alarm_son > 0) {
+        sayi aralik = g_surec[s].alarm_aralik;
+        upp.tampon.yaz64(t, 0, aralik / 1000);
+        upp.tampon.yaz64(t, 8, aralik % 1000 * 1000);
+        sayi kalan_us = upp.max(g_surec[s].alarm_son - upp.zaman(), 1) * 1000 - 1;
+        upp.tampon.yaz64(t, 16, kalan_us / 1000000);
+        upp.tampon.yaz64(t, 24, kalan_us % 1000000);
+    }
+    don sc_yapi_ver(s, adres, t, 32);
+}
+
+// ITIMER_REAL; ITIMER_VIRTUAL/PROF (işlemci süresi tutulmadığından) hiç dolmaz.
+fonk sc_setitimer(sayi s, sayi hangi, sayi yeni, sayi eski) -> sayi {
+    eger (hangi < 0 || hangi > 2) { don -EINVAL; }
+    sayi aralik = 0;
+    sayi deger = 0;
+    eger (yeni != 0) {
+        aralik = sc_timespec_ms(s, yeni, dogru);
+        eger (aralik < 0) { don g_sc_hata; }
+        deger = sc_timespec_ms(s, yeni + 16, dogru);
+        eger (deger < 0) { don g_sc_hata; }
+    }
+    eger (eski != 0) {
+        sayi r = itimer_yaz(s, hangi, eski);
+        eger (r < 0) { don r; }
+    }
+    eger (hangi != 0) { don 0; }
+    eger (deger == 0) {
+        g_surec[s].alarm_son = 0;
+        g_surec[s].alarm_aralik = 0;
+    } yoksa {
+        g_surec[s].alarm_son = upp.max(upp.zaman() + deger, 1);
+        g_surec[s].alarm_aralik = aralik;
+    }
+    don 0;
+}
+
+fonk sc_getitimer(sayi s, sayi hangi, sayi adres) -> sayi {
+    eger (hangi < 0 || hangi > 2) { don -EINVAL; }
+    don itimer_yaz(s, hangi, adres);
+}
+
+// alarm: önceki alarmın kalan saniyesi (yarım saniye ve üstü yukarı; kalan varsa en az 1).
+fonk sc_alarm(sayi s, sayi sn) -> sayi {
+    sayi eski = 0;
+    eger (g_surec[s].alarm_son > 0) {
+        sayi kalan = upp.max(g_surec[s].alarm_son - upp.zaman(), 1);
+        eski = kalan / 1000;
+        eger (kalan % 1000 >= 500) { eski += 1; }
+        eger (eski == 0) { eski = 1; }
+    }
+    sayi saniye = sn & 0xFFFFFFFF;
+    g_surec[s].alarm_aralik = 0;
+    eger (saniye == 0) {
+        g_surec[s].alarm_son = 0;
+    } yoksa {
+        g_surec[s].alarm_son = upp.max(upp.zaman() + saniye * 1000, 1);
+    }
+    don eski;
+}
+
+// pause: bir sinyal gelene dek (alarm, kill, Ctrl-C) bekler.
+fonk sc_pause(sayi s) -> sayi {
+    iken (dogru) {
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    don -EINTR;
+}

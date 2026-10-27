@@ -1,0 +1,30 @@
+// Çekirdek: Uppix AF_UNIX soketleri ve hazırlık çağrıları: socketpair, dinleyen soket
+// (dosya yolu ve soyut ad), connect/accept, SCM_RIGHTS, SO_PEERCRED, SO_PASSCRED,
+// shutdown/EOF, EPIPE/SIGPIPE; poll, select, epoll (seviye, EPOLLET, EPOLLONESHOT);
+// eventfd, timerfd, setitimer/alarm/pause; fork ile istemci-sunucu (sctest4) ve glibc
+// ile statik derlenmiş socket/poll/epoll/SCM_RIGHTS programı (gsoket).
+// Denetim: aynı sctest4/gsoket ikilileri gerçek Linux'ta çalıştırılır; çıktıları
+// Uppix'teki çıktıyla satır satır aynı olmalıdır. Sonra ext4 kök e2fsck ile denetlenir.
+// @gerek: cc mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
+// @hazirla: rm -rf tests/_cikti/soket_img
+// @bayrak: --onyukleyici limine --disk tests/_cikti/soket_img/uppix.img --disk-hazirla disk_yap.sh
+// @girdi: sctest4; echo "sctest4 kod=$?"
+// @girdi: gsoket; echo "gsoket kod=$?"
+// @girdi: ls -l /tmp | grep -c sct4
+// @girdi: poweroff
+// @icerir: === sctest4 bitti ===
+// @icerir: sctest4 kod=0
+// @icerir: glibc soket bitti
+// @icerir: gsoket kod=0
+// @icerir: Sistem kapatılıyor...
+// @denetle: test -x tests/_cikti/soket_img/kullanici/sctest4 && test -x tests/_cikti/soket_img/kullanici/gsoket
+// @denetle: K=$(pwd) && D=$(mktemp -d) && cd "$D" && "$K/tests/_cikti/soket_img/kullanici/sctest4" > linux.txt < /dev/null && cd "$K" && sed -n '/=== sctest4 başla/,/=== sctest4 bitti/p' tests/_cikti/ck_13_uppix_soket.konsol | tr -d '\r' > "$D/uppix.txt" && diff "$D/linux.txt" "$D/uppix.txt" && rm -rf "$D"
+// @denetle: K=$(pwd) && D=$(mktemp -d) && cd "$D" && "$K/tests/_cikti/soket_img/kullanici/gsoket" > linux.txt < /dev/null && cd "$K" && sed -n '/^glibc soket başla/,/^glibc soket bitti/p' tests/_cikti/ck_13_uppix_soket.konsol | tr -d '\r' > "$D/uppix.txt" && diff "$D/linux.txt" "$D/uppix.txt" && rm -rf "$D"
+// @denetle: dd if=tests/_cikti/soket_img/uppix.img of=/tmp/upp_soket_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_soket_p2.img && rm -f /tmp/upp_soket_p2.img
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}

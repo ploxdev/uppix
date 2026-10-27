@@ -80,6 +80,7 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (s < 0) { don -ENOSYS; }
     // kabuğun görevindeki sürece başka bir süreç sinyal göndermiş: süreç burada biter
     eger (g_surec[s].bekleyen) { don sc_bekleyen_bitir(s); }
+    eger (sc_alarm_denetle(s)) { don -EINTR; }
     // G/Ç
     eger (no == 0) { don sc_read(s, a1, a2, a3); }
     eger (no == 1) { don sc_write(s, a1, a2, a3); }
@@ -117,6 +118,44 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (no == 267) { don sc_readlink(s, a1, a2, a3, a4); }
     eger (no == 22) { don sc_pipe2(s, a1, 0); }
     eger (no == 293) { don sc_pipe2(s, a1, a2); }
+    // soketler (AF_UNIX)
+    eger (no == 41) { don sc_socket(s, a1, a2, a3); }
+    eger (no == 53) { don sc_socketpair(s, a1, a2, a3, a4); }
+    eger (no == 49) { don sc_bind(s, a1, a2, a3 & 0xFFFFFFFF); }
+    eger (no == 50) { don sc_listen(s, a1, a2); }
+    eger (no == 43) { don sc_accept(s, a1, a2, a3, 0); }
+    eger (no == 288) { don sc_accept(s, a1, a2, a3, a4); }
+    eger (no == 42) { don sc_connect(s, a1, a2, a3 & 0xFFFFFFFF); }
+    eger (no == 51) { don sc_getsockname(s, a1, a2, a3, yanlis); }
+    eger (no == 52) { don sc_getsockname(s, a1, a2, a3, dogru); }
+    eger (no == 48) { don sc_shutdown(s, a1, a2); }
+    eger (no == 44) { don sc_sendto(s, a1, a2, a3, a4, a5, a6 & 0xFFFFFFFF); }
+    eger (no == 45) { don sc_recvfrom(s, a1, a2, a3, a4, a5, a6); }
+    eger (no == 46) { don sc_sendmsg(s, a1, a2, a3); }
+    eger (no == 47) { don sc_recvmsg(s, a1, a2, a3); }
+    eger (no == 54) { don sc_setsockopt(s, a1, a2, a3, a4, isaretli32(a5)); }
+    eger (no == 55) { don sc_getsockopt(s, a1, a2, a3, a4, a5); }
+    // hazırlık ve olay tanımlayıcıları
+    eger (no == 7) { don sc_poll(s, a1, a2, bitis_ani(isaretli32(a3))); }
+    eger (no == 271) { don sc_ppoll(s, a1, a2, a3, a4, a5); }
+    eger (no == 23) { don sc_select_tv(s, isaretli32(a1), a2, a3, a4, a5); }
+    eger (no == 270) { don sc_pselect6(s, isaretli32(a1), a2, a3, a4, a5); }
+    eger (no == 213) {
+        eger (isaretli32(a1) <= 0) { don -EINVAL; }
+        don sc_epoll_create(s, 0);
+    }
+    eger (no == 291) { don sc_epoll_create(s, a1); }
+    eger (no == 233) { don sc_epoll_ctl(s, a1, a2, a3, a4); }
+    eger (no == 232 || no == 281) { don sc_epoll_wait(s, a1, a2, isaretli32(a3), bitis_ani(isaretli32(a4))); }
+    eger (no == 290) { don sc_eventfd(s, a1, a2); }
+    eger (no == 284) { don sc_eventfd(s, a1, 0); }
+    eger (no == 283) { don sc_timerfd_create(s, a1, a2); }
+    eger (no == 286) { don sc_timerfd_settime(s, a1, a2, a3, a4); }
+    eger (no == 287) { don sc_timerfd_gettime(s, a1, a2); }
+    eger (no == 38) { don sc_setitimer(s, a1, a2, a3); }
+    eger (no == 36) { don sc_getitimer(s, a1, a2); }
+    eger (no == 37) { don sc_alarm(s, a1); }
+    eger (no == 34) { don sc_pause(s); }
     // bellek
     eger (no == 9) { don sc_mmap(s, a1, a2, a3, a4, a5, a6); }
     eger (no == 10) { don sc_mprotect(s, a1, a2, a3); }
@@ -280,38 +319,25 @@ fonk sc_bekleyen_bitir(sayi s) -> sayi {
 fonk sc_bekle(sayi s) -> sayi {
     upp.uyut(1);
     eger (g_surec[s].bekleyen) { don sc_bekleyen_bitir(s); }
+    eger (sc_alarm_denetle(s)) { don -EINTR; }
     eger (sc_on_planda(s) && kesme_istendi_mi()) { don sc_kesme(s); }
     don 0;
 }
 
 // ---- read ----
 
-// Terminalden kanonik satır: yankı, geri silme, Ctrl-D (boş satırda EOF), Ctrl-C.
-fonk sc_terminal_satir(sayi s) -> metin {
-    metin satir_m = "";
-    iken (dogru) {
-        sayi c = tus_al();
-        eger (c == 3) { don yok; }
-        eger (c == 4) {
-            eger (satir_m == "") { don ""; }
-            devam;
-        }
-        eger (c == '\r' || c == '\n') {
-            terminale_yaz("\n");
-            don satir_m + "\n";
-        }
-        eger (c == 8 || c == 127) {
-            eger (upp.uzunluk(satir_m) > 0) {
-                satir_m = upp.metin.kes(satir_m, 0, upp.uzunluk(satir_m) - 1);
-                terminale_yaz("\x08 \x08");
-            }
-            devam;
-        }
-        metin k = upp.metin.karakter(c);
-        satir_m += k;
-        eger (c == 27) { terminale_yaz("^["); } yoksa { terminale_yaz(k); }
+// Terminalden kanonik satır: yankı, geri silme, Ctrl-D (boş satırda EOF), Ctrl-C. Satır
+// düzeni (tty_tus_isle) poll ile ortaktır: poll'un işlediği yarım satır burada sürer.
+// Dönüş: 1 satır hazır, 0 EOF, -1 Ctrl-C.
+fonk sc_terminal_satir(sayi s) -> sayi {
+    iken (g_surec[s].satir_artik == "" && !g_surec[s].satir_eof) {
+        eger (tty_tus_isle(s, tus_al()) < 0) { don -1; }
     }
-    don "";
+    eger (g_surec[s].satir_artik == "") {
+        g_surec[s].satir_eof = yanlis;
+        don 0;
+    }
+    don 1;
 }
 
 fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
@@ -326,13 +352,16 @@ fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (g_fd_bayrak[y] % 4 == 1) { don -EBADF; }
     eger (tur == FD_BORU_OKU) { don boru_oku(s, y, buf, n); }
     eger (tur == FD_OLAY) { don sc_olay_oku(s, y, buf, n); }
+    eger (tur == FD_SOKET) { don sc_soket_oku(s, y, fd, buf, n); }
+    eger (tur == FD_EVENTFD) { don sayac_oku(s, y, buf, n); }
+    eger (tur == FD_TIMERFD) { don zamanlayici_oku(s, y, buf, n); }
+    eger (tur == FD_EPOLL) { don -EINVAL; }
     eger (tur == FD_TERMINAL && g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) { don sc_tty_ham_oku(s, y, buf, n); }
     eger (tur == FD_TERMINAL) {
         eger (g_surec[s].satir_artik == "") {
-            metin satir_m = sc_terminal_satir(s);
-            eger (satir_m == yok) { don sc_kesme(s); }
-            eger (satir_m == "") { don 0; }
-            g_surec[s].satir_artik = satir_m;
+            sayi r = sc_terminal_satir(s);
+            eger (r < 0) { don sc_kesme(s); }
+            eger (r == 0) { don 0; }
         }
         metin artik = g_surec[s].satir_artik;
         sayi var = bayt_say(artik);
@@ -382,6 +411,9 @@ fonk sc_write(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_NULL) { don n; }
     eger (tur == FD_BORU_YAZ) { don boru_yaz(s, y, buf, n); }
     eger (tur == FD_OLAY) { don sc_olay_yaz(s, y, buf, n); }
+    eger (tur == FD_SOKET) { don sc_soket_yaz(s, y, fd, buf, n); }
+    eger (tur == FD_EVENTFD) { don sayac_yaz(s, y, buf, n); }
+    eger (tur == FD_TIMERFD || tur == FD_EPOLL) { don -EINVAL; }
     metin veri = sc_oku_metin(s, buf, n);
     eger (veri == yok) { don -EFAULT; }
     eger (tur == FD_TERMINAL) {
@@ -448,6 +480,7 @@ fonk sc_open(sayi s, sayi dirfd, sayi yol_adr, sayi bayrak, sayi kip) -> sayi {
         yoksa eger (a == "konsol") { tur = FD_TERMINAL; }
         yoksa eger (a == "fb") { tur = FD_FB; }
         yoksa eger (olay_aygiti(a) >= 0) { tur = FD_OLAY; }
+        yoksa eger (a == "soket") { don -ENXIO; }
         yoksa eger (a != "rastgele") { don -EACCES; }
     } yoksa {
         eger (erisim != 0 && (dt == D_SANAL || fs_salt_okunur(no))) {
@@ -501,13 +534,14 @@ fonk sc_dugum_stat(sayi no) -> sayi {
         nlink = 2;
     }
     eger (dt == D_AYGIT) { mod = 8192; }      // S_IFCHR
+    eger (dt == D_AYGIT && g_fs[no].aygit == "soket") { mod = 49152; } // S_IFSOCK
     mod += g_fs[no].kip % 4096;
     sayi ino = g_fs[no].ino;
     eger (ino <= 0) { ino = no + 1; }
     sayi uzunluk = 0;
     eger (dt == D_DOSYA || dt == D_DIZIN) { uzunluk = fs_boyut(no); }
     sayi t = sc_stat_tampon(mod, ino, g_fs[no].bag + 1, nlink, uzunluk, g_fs[no].zaman);
-    eger (dt == D_AYGIT) { upp.tampon.yaz64(t, 40, aygit_rdev(no)); }   // st_rdev
+    eger (dt == D_AYGIT && g_fs[no].aygit != "soket") { upp.tampon.yaz64(t, 40, aygit_rdev(no)); }   // st_rdev
     don t;
 }
 
@@ -533,6 +567,14 @@ fonk sc_fstat(sayi s, sayi fd, sayi buf) -> sayi {
     eger (tur == FD_DOSYA || tur == FD_DIZIN || tur == FD_NULL || tur == FD_FB) {
         eger (g_fd_no[y] >= 0) { don sc_yapi_ver(s, buf, sc_dugum_stat(g_fd_no[y]), 144); }
     }
+    eger (tur == FD_SOKET) {
+        // soket: S_IFSOCK | 0777
+        don sc_yapi_ver(s, buf, sc_stat_tampon(49152 + 511, g_fd_no[y] + 1, 8, 1, 0, simdi()), 144);
+    }
+    eger (tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD) {
+        // anonim düğüm: tür biti yok, 0600
+        don sc_yapi_ver(s, buf, sc_stat_tampon(384, 1, 9, 1, 0, simdi()), 144);
+    }
     eger (tur == FD_OLAY) {
         // girdi aygıtı: S_IFCHR | 0660, 13:64 + n (mice 13:63)
         sayi ag = g_girdi[g_fd_no[y]].aygit;
@@ -556,7 +598,7 @@ fonk sc_lseek(sayi s, sayi fd, sayi ofs, sayi nereden) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi y = fd_yer(s, fd);
     sayi tur = g_fd_tur[y];
-    eger (tur == FD_TERMINAL || tur == FD_GIRDI || tur == FD_OLAY || fd_boru_mu(tur)) { don -ESPIPE; }
+    eger (tur == FD_TERMINAL || tur == FD_GIRDI || tur == FD_OLAY || fd_boru_mu(tur) || fd_anonim_mi(tur)) { don -ESPIPE; }
     eger (tur == FD_NULL || tur == FD_FB) { don 0; }
     sayi yeni = 0;
     eger (nereden == 0) {
@@ -800,6 +842,7 @@ fonk sc_brk(sayi s, sayi yeni) -> sayi {
 fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi tur = g_fd_tur[fd_yer(s, fd)];
+    eger ((istek & 0xFFFFFFFF) == FIONREAD) { don sc_fionread(s, fd_yer(s, fd), arg); }
     eger (tur == FD_OLAY) { don sc_olay_ioctl(s, fd_yer(s, fd), istek, arg); }
     eger (tur == FD_TERMINAL) {
         sayi k = sc_konsol_ioctl(s, istek & 0xFFFFFFFF, arg);
@@ -865,6 +908,28 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
     don -ENOTTY;
 }
 
+// FIONREAD: okunmayı bekleyen bayt sayısı.
+fonk sc_fionread(sayi s, sayi y, sayi arg) -> sayi {
+    sayi tur = g_fd_tur[y];
+    sayi no = g_fd_no[y];
+    sayi n = 0;
+    eger (tur == FD_SOKET) {
+        n = soket_okunabilir_bayt(no);
+        eger (n < 0) { don n; }
+    } yoksa eger (tur == FD_BORU_OKU) {
+        n = g_boru[no].dolu;
+    } yoksa eger (tur == FD_TERMINAL) {
+        n = bayt_say(g_surec[s].satir_artik);
+    } yoksa eger (tur == FD_GIRDI) {
+        n = upp.max(bayt_say(g_surec[s].girdi) - g_surec[s].girdi_konum, 0);
+    } yoksa eger (tur == FD_DOSYA) {
+        n = upp.max(fs_boyut(no) - g_fd_konum[y], 0);
+    } yoksa {
+        don -ENOTTY;
+    }
+    don sc_int_ver(s, arg, n);
+}
+
 // ---- nanosleep ----
 
 fonk sc_nanosleep(sayi s, sayi istek, sayi kalan) -> sayi {
@@ -882,6 +947,7 @@ fonk sc_nanosleep(sayi s, sayi istek, sayi kalan) -> sayi {
         sayi k = bitis - upp.zaman();
         eger (k > 20) { k = 20; }
         upp.uyut(k);
+        eger (sc_alarm_denetle(s)) { don -EINTR; }
         eger (sc_on_planda(s) && kesme_istendi_mi()) {
             eger (kalan != 0) {
                 sayi r = upp.tampon.yeni(16);

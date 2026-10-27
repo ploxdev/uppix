@@ -74,6 +74,39 @@ typedef long ssize_t;
 #define SYS_faccessat 269
 #define SYS_dup3 292
 #define SYS_pipe2 293
+#define SYS_poll 7
+#define SYS_select 23
+#define SYS_pause 34
+#define SYS_getitimer 36
+#define SYS_alarm 37
+#define SYS_setitimer 38
+#define SYS_socket 41
+#define SYS_connect 42
+#define SYS_accept 43
+#define SYS_sendto 44
+#define SYS_recvfrom 45
+#define SYS_sendmsg 46
+#define SYS_recvmsg 47
+#define SYS_shutdown 48
+#define SYS_bind 49
+#define SYS_listen 50
+#define SYS_getsockname 51
+#define SYS_getpeername 52
+#define SYS_socketpair 53
+#define SYS_setsockopt 54
+#define SYS_getsockopt 55
+#define SYS_epoll_create 213
+#define SYS_epoll_wait 232
+#define SYS_epoll_ctl 233
+#define SYS_pselect6 270
+#define SYS_ppoll 271
+#define SYS_timerfd_create 283
+#define SYS_eventfd 284
+#define SYS_timerfd_settime 286
+#define SYS_timerfd_gettime 287
+#define SYS_accept4 288
+#define SYS_eventfd2 290
+#define SYS_epoll_create1 291
 #define SYS_prlimit64 302
 #define SYS_getrandom 318
 
@@ -143,6 +176,88 @@ typedef long ssize_t;
 #define S_IFREG 0100000
 #define S_IFCHR 0020000
 #define S_IFIFO 0010000
+#define S_IFSOCK 0140000
+
+#define AF_UNIX 1
+#define AF_INET 2
+#define SOCK_STREAM 1
+#define SOCK_DGRAM 2
+#define SOCK_NONBLOCK 04000
+#define SOCK_CLOEXEC 02000000
+#define SOL_SOCKET 1
+#define SO_TYPE 3
+#define SO_ERROR 4
+#define SO_SNDBUF 7
+#define SO_PASSCRED 16
+#define SO_PEERCRED 17
+#define SCM_RIGHTS 1
+#define SCM_CREDENTIALS 2
+#define MSG_PEEK 2
+#define MSG_CTRUNC 8
+#define MSG_TRUNC 0x20
+#define MSG_DONTWAIT 0x40
+#define MSG_NOSIGNAL 0x4000
+#define SHUT_RD 0
+#define SHUT_WR 1
+#define SHUT_RDWR 2
+#define FIONREAD 0x541B
+
+#define POLLIN 1
+#define POLLPRI 2
+#define POLLOUT 4
+#define POLLERR 8
+#define POLLHUP 16
+#define POLLNVAL 32
+#define POLLRDHUP 0x2000
+#define EPOLL_CTL_ADD 1
+#define EPOLL_CTL_DEL 2
+#define EPOLL_CTL_MOD 3
+#define EPOLLIN 1
+#define EPOLLOUT 4
+#define EPOLLONESHOT (1u << 30)
+#define EPOLLET (1u << 31)
+#define EPOLL_CLOEXEC 02000000
+#define EFD_SEMAPHORE 1
+#define EFD_NONBLOCK 04000
+#define TFD_NONBLOCK 04000
+#define CLOCK_MONOTONIC 1
+#define ITIMER_REAL 0
+
+struct sockaddr_un {
+    unsigned short sun_family;
+    char sun_path[108];
+};
+
+struct msghdr {
+    void* msg_name;
+    unsigned int msg_namelen;
+    struct iovec* msg_iov;
+    size_t msg_iovlen;
+    void* msg_control;
+    size_t msg_controllen;
+    int msg_flags;
+};
+
+struct cmsghdr {
+    size_t cmsg_len;
+    int cmsg_level, cmsg_type;
+};
+
+struct ucred {
+    int pid;
+    unsigned int uid, gid;
+};
+
+struct pollfd {
+    int fd;
+    short events, revents;
+};
+
+struct epoll_event {
+    unsigned int events;
+    unsigned long data;
+} __attribute__((packed));
+
 
 #define WNOHANG 1
 #define WEXITED 4
@@ -178,6 +293,14 @@ struct rlimit {
 
 struct timeval {
     long tv_sec, tv_usec;
+};
+
+struct itimerval {
+    struct timeval it_interval, it_value;
+};
+
+struct itimerspec {
+    struct timespec it_interval, it_value;
 };
 
 struct input_event {

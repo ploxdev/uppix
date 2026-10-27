@@ -133,6 +133,7 @@ fonk sc_clock_nanosleep(sayi s, sayi saat, sayi bayrak, sayi istek, sayi kalan) 
         sayi k = bitis - upp.zaman();
         eger (k > 20) { k = 20; }
         upp.uyut(k);
+        eger (sc_alarm_denetle(s)) { don -EINTR; }
         eger (sc_on_planda(s) && kesme_istendi_mi()) {
             // mutlak uykuda kalan süre yazılmaz
             eger (kalan != 0 && !mutlak) {
@@ -753,6 +754,7 @@ fonk sc_futex(sayi s, sayi adres, sayi islem, sayi deger, sayi zaman) -> sayi {
     upp.tampon.birak(t);
     iken (bitis < 0 || upp.zaman() < bitis) {
         upp.uyut(20);
+        eger (sc_alarm_denetle(s)) { don -EINTR; }
         eger (sc_on_planda(s) && kesme_istendi_mi()) { don sc_kesme(s); }
     }
     don -ETIMEDOUT;

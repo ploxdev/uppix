@@ -36,6 +36,10 @@ sabit sayi FD_FB = 6;        // /dev/fb0
 sabit sayi FD_BORU_OKU = 7;  // borunun okuma ucu (g_fd_no: g_boru yuvası)
 sabit sayi FD_BORU_YAZ = 8;  // borunun yazma ucu
 sabit sayi FD_OLAY = 9;      // girdi aygıtı: /dev/input/event*, /dev/input/mice (g_fd_no: g_girdi istemcisi)
+sabit sayi FD_SOKET = 10;    // AF_UNIX soketi (g_fd_no: g_soket)
+sabit sayi FD_EPOLL = 11;    // epoll örneği (g_fd_no: g_epoll)
+sabit sayi FD_EVENTFD = 12;  // eventfd sayacı (g_fd_no: g_sayac)
+sabit sayi FD_TIMERFD = 13;  // timerfd (g_fd_no: g_zamanlayici)
 
 sinif Surec {
     sayi pid;          // 0: boş yuva
@@ -63,6 +67,10 @@ sinif Surec {
     mantik bekleyen;   // sinyal kabuğun görevindeki sürece verildi: sıradaki sistem çağrısında biter
     mantik catal;      // fork ile doğdu, kendi görevinde koşuyor
     sayi cerceve;      // çocuğun başlangıç yazmaçları (tampon); -1: başladı ya da yok
+    sayi alarm_son;    // ITIMER_REAL: dolacağı an (upp.zaman, ms); 0: kurulu değil
+    sayi alarm_aralik; // ITIMER_REAL yeniden kurma aralığı (ms)
+    metin satir_parca; // terminalde yazılmakta olan (tamamlanmamış) satır
+    mantik satir_eof;  // boş satırda Ctrl-D: sıradaki okuma 0 döner
 }
 
 liste[Surec] g_surec;
@@ -121,7 +129,10 @@ sinif Boru {
     sayi okuyucu;
     sayi yazici;
     mantik etkin;
+    sayi kusak;
 }
+
+// kusak: her okuma ve yazmada artar (epoll EPOLLET yeni olayı bundan anlar).
 
 liste[Boru] g_boru;
 
@@ -157,11 +168,15 @@ fonk boru_birak(sayi tur, sayi no) -> bos {
 fonk fd_nesne_al(sayi tur, sayi no) -> bos {
     boru_al(tur, no);
     eger (tur == FD_OLAY) { girdi_istemci_al(no); }
+    eger (tur == FD_SOKET) { soket_ref_al(no); }
+    eger (tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD) { hazir_nesne_al(tur, no); }
 }
 
 fonk fd_nesne_birak(sayi tur, sayi no) -> bos {
     boru_birak(tur, no);
     eger (tur == FD_OLAY) { girdi_istemci_birak(no); }
+    eger (tur == FD_SOKET) { soket_ref_birak(no); }
+    eger (tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD) { hazir_nesne_birak(tur, no); }
 }
 
 // Tanımlayıcı yuvasını yazar; eski nesnenin sayacı düşer, yeninin artar (önce artar:
@@ -332,6 +347,9 @@ fonk surec_catal(sayi s, sayi ka) -> sayi {
     y.catal = dogru;
     y.cerceve = -1;
     y.satir_artik = "";
+    // zamanlayıcılar (setitimer, alarm) çocuğa geçmez
+    y.alarm_son = 0;
+    y.alarm_aralik = 0;
     sayi c = surec_yuva_ayir(y);
     her (sayi fd in 0..FD_MAX) {
         sayi a = fd_yer(s, fd);

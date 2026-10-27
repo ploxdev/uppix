@@ -479,7 +479,7 @@ fonk fs_dosya_ac(metin yol) -> sayi {
 fonk kip_metin(sayi no) -> metin {
     sayi t = g_fs[no].tur;
     metin s = "-";
-    eger (t == D_DIZIN) { s = "d"; } yoksa eger (t == D_AYGIT) { s = "c"; }
+    eger (t == D_DIZIN) { s = "d"; } yoksa eger (t == D_AYGIT && g_fs[no].aygit == "soket") { s = "s"; } yoksa eger (t == D_AYGIT) { s = "c"; }
     sayi k = g_fs[no].kip;
     metin harf = "rwxrwxrwx";
     sayi bit = 256;

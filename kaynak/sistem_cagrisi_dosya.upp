@@ -36,6 +36,8 @@ fonk sc_pread(sayi s, sayi fd, sayi buf, sayi n, sayi ofs, mantik yaz) -> sayi {
 // ---- readv / writev: struct iovec { void* base; size_t len; } dizisi ----
 fonk sc_vektor(sayi s, sayi fd, sayi iov, sayi adet, mantik yaz) -> sayi {
     eger (adet < 0 || adet > 1024) { don -EINVAL; }
+    // soket: tek ileti (datagramda bölünmez)
+    eger (fd_gecerli(s, fd) && g_fd_tur[fd_yer(s, fd)] == FD_SOKET) { don soket_vektor(s, fd, iov, adet, yaz); }
     eger (adet == 0) { don 0; }
     sayi t = upp.tampon.yeni(adet * 16);
     eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, iov, t, 0, adet * 16)) {
@@ -125,8 +127,8 @@ fonk sc_fcntl(sayi s, sayi fd, sayi komut, sayi arg) -> sayi {
     eger (komut == F_GETFL) {
         // açılışta tüketilen bayraklar görünmez; 64 bitte O_LARGEFILE hep açıktır
         sayi tuketilen = O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_CLOEXEC;
-        // borular open ile açılmadığından O_LARGEFILE taşımaz
-        eger (fd_boru_mu(g_fd_tur[y])) { don bayrak - (bayrak & tuketilen); }
+        // borular, soketler ve anonim tanımlayıcılar open ile açılmadığından O_LARGEFILE taşımaz
+        eger (fd_boru_mu(g_fd_tur[y]) || fd_anonim_mi(g_fd_tur[y]) || g_fd_tur[y] == FD_SOKET) { don bayrak - (bayrak & tuketilen); }
         don (bayrak - (bayrak & tuketilen)) | O_LARGEFILE;
     }
     eger (komut == F_SETFL) {
@@ -140,6 +142,9 @@ fonk sc_fcntl(sayi s, sayi fd, sayi komut, sayi arg) -> sayi {
 
 // ---- pipe / pipe2 ----
 fonk fd_boru_mu(sayi tur) -> mantik => tur == FD_BORU_OKU || tur == FD_BORU_YAZ;
+
+// Dosya sistemi düğümü olmayan tanımlayıcılar (lseek ESPIPE).
+fonk fd_anonim_mi(sayi tur) -> mantik => tur == FD_SOKET || tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD;
 
 // pipe2(fds, bayrak): O_CLOEXEC, O_NONBLOCK (O_DIRECT kabul edilir, paket kipi yok).
 fonk sc_pipe2(sayi s, sayi adres, sayi bayrak) -> sayi {
@@ -183,6 +188,7 @@ fonk boru_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
     eger (k > ilk && !upp.cekirdek.kullanici_yaz(ka, buf + ilk, g_boru[b].tampon, 0, k - ilk)) { don -EFAULT; }
     g_boru[b].bas = (bas + k) % BORU_BOY;
     g_boru[b].dolu -= k;
+    g_boru[b].kusak += 1;
     don k;
 }
 
@@ -223,6 +229,7 @@ fonk boru_yaz(sayi s, sayi y, sayi buf, sayi n) -> sayi {
             don -EFAULT;
         }
         g_boru[b].dolu += k;
+        g_boru[b].kusak += 1;
         yazilan += k;
     }
     don yazilan;

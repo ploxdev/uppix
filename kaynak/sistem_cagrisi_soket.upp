@@ -1,0 +1,1213 @@
+// Uppix — AF_UNIX soketleri (Linux x86_64 semantiği).
+// SOCK_STREAM ve SOCK_DGRAM; adresler dosya sistemi yolu (bind bellekteki bir dosya
+// sisteminde S_IFSOCK düğümü oluşturur), soyut ad alanı (sun_path[0] == 0) ve adsız
+// (socketpair). Akış soketinin alma tamponu 256 KiB'lık halkadır; dolunca yazan bekler.
+// sendmsg/recvmsg SCM_RIGHTS ile tanımlayıcı taşır, SO_PASSCRED ile SCM_CREDENTIALS
+// verir. Çağrılar: socket, socketpair, bind, listen, accept/accept4, connect,
+// getsockname, getpeername, shutdown, sendto/recvfrom, sendmsg/recvmsg,
+// setsockopt/getsockopt; read/write/readv/writev, close/dup/fork, O_NONBLOCK, FIONREAD.
+
+sabit sayi AF_UNIX = 1;
+sabit sayi SOCK_STREAM = 1;
+sabit sayi SOCK_DGRAM = 2;
+sabit sayi SOCK_NONBLOCK = 2048;
+sabit sayi SOCK_CLOEXEC = 524288;
+sabit sayi SOKET_TAMPON = 262144;
+sabit sayi DGRAM_KUYRUK = 64;
+sabit sayi SOCKADDR_UN_BOY = 110;
+
+sabit sayi ENOTSOCK = 88;
+sabit sayi EMSGSIZE = 90;
+sabit sayi EPROTOTYPE = 91;
+sabit sayi ENOBUFS = 105;
+sabit sayi ENOPROTOOPT = 92;
+sabit sayi EPROTONOSUPPORT = 93;
+sabit sayi ESOCKTNOSUPPORT = 94;
+sabit sayi EAFNOSUPPORT = 97;
+sabit sayi EADDRINUSE = 98;
+sabit sayi EISCONN = 106;
+sabit sayi ENOTCONN = 107;
+sabit sayi ECONNREFUSED = 111;
+
+sabit sayi MSG_OOB = 1;
+sabit sayi MSG_PEEK = 2;
+sabit sayi MSG_CTRUNC = 8;
+sabit sayi MSG_TRUNC = 0x20;
+sabit sayi MSG_DONTWAIT = 0x40;
+sabit sayi MSG_WAITALL = 0x100;
+sabit sayi MSG_NOSIGNAL = 0x4000;
+sabit sayi MSG_CMSG_CLOEXEC = 0x40000000;
+
+sabit sayi SOL_SOCKET = 1;
+sabit sayi SCM_RIGHTS = 1;
+sabit sayi SCM_CREDENTIALS = 2;
+sabit sayi SCM_EN_COK_FD = 253;
+
+// Soket durumu (hal): 0 yeni (bağlı değil), 1 dinliyor, 2 bağlı.
+sinif Soket {
+    mantik etkin;
+    sayi ref;
+    sayi tur;
+    sayi hal;
+    sayi ad_tur;
+    metin ad;
+    sayi dugum;
+    sayi es;
+    sayi es_pid;
+    mantik alma_kapali;
+    mantik gonderme_kapali;
+    sayi tampon;
+    sayi bas;
+    sayi dolu;
+    sayi yazilan;
+    sayi okunan;
+    liste[sayi] hak_bas;
+    liste[sayi] hak_son;
+    liste[liste[sayi]] hak_fd;
+    liste[sayi] hak_pid;
+    liste[metin] dg_veri;
+    liste[metin] dg_kaynak;
+    liste[liste[sayi]] dg_hak;
+    liste[sayi] dg_pid;
+    liste[sayi] bekleyen;
+    sayi kuyruk;
+    mantik passcred;
+    mantik reuseaddr;
+    mantik keepalive;
+    sayi sndbuf;
+    sayi rcvbuf;
+    sayi kusak;
+}
+
+// ad_tur: 0 adsız, 1 yol (ad: bind'e verilen yol), 2 soyut (ad: adın onaltılık kodu).
+// dugum: yol adresinin VFS düğümü (-1). es: bağlı eş soket (-1 yok). es_pid: eşin
+// kimliği (SO_PEERCRED). Akış verisi halkada (tampon, bas, dolu); yazilan/okunan akışın
+// mutlak konumları. hak_*: SCM_RIGHTS taşıyan iletilerin [bas, son) aralığı ve
+// tanımlayıcıları (her biri tur, no, konum, bayrak). dg_*: datagram iletileri, kaynak
+// adresleri ve hakları. bekleyen: dinleyenin kabul edilmemiş bağlantıları.
+
+liste[Soket] g_soket;
+harita[metin, sayi] g_soket_soyut;   // soyut ad (onaltılık) → soket
+sayi g_soket_otoad = 0;
+
+fonk soket_yeni(sayi tur) -> sayi {
+    Soket k;
+    k.etkin = dogru;
+    k.tur = tur;
+    k.dugum = -1;
+    k.es = -1;
+    k.sndbuf = 212992;
+    k.rcvbuf = 212992;
+    eger (tur == SOCK_STREAM) { k.tampon = upp.tampon.yeni(SOKET_TAMPON); } yoksa { k.tampon = -1; }
+    her (sayi i in 0..g_soket.uzunluk()) {
+        eger (!g_soket[i].etkin) {
+            g_soket.yaz(i, k);
+            don i;
+        }
+    }
+    g_soket.ekle(k);
+    don g_soket.uzunluk() - 1;
+}
+
+fonk soket_ref_al(sayi k) -> bos {
+    g_soket[k].ref += 1;
+}
+
+// Yoldaki haklar (taşınan tanımlayıcılar) bırakılır.
+fonk haklari_birak(liste[sayi] h) -> bos {
+    sayi i = 0;
+    iken (i + 3 < h.uzunluk()) {
+        fd_nesne_birak(h[i], h[i + 1]);
+        i += 4;
+    }
+}
+
+// Son tanımlayıcı kapandı: eşi koparılır (EOF, EPIPE), dinleyenin bekleyen bağlantıları
+// kapanır, ad bırakılır.
+fonk soket_ref_birak(sayi k) -> bos {
+    g_soket[k].ref -= 1;
+    eger (g_soket[k].ref > 0 || !g_soket[k].etkin) { don; }
+    soket_yok_et(k);
+}
+
+fonk soket_yok_et(sayi k) -> bos {
+    g_soket[k].etkin = yanlis;
+    sayi es = g_soket[k].es;
+    eger (es >= 0 && g_soket[es].etkin && g_soket[es].es == k) { soket_kopar(es); }
+    // bu sokete bağlı datagram soketleri
+    her (sayi i in 0..g_soket.uzunluk()) {
+        eger (g_soket[i].etkin && i != k && g_soket[i].es == k) { soket_kopar(i); }
+    }
+    liste[sayi] bekleyen = g_soket[k].bekleyen;
+    g_soket[k].bekleyen.temizle();
+    her (oto b in bekleyen) {
+        eger (g_soket[b].etkin) { soket_yok_et(b); }
+    }
+    her (oto h in g_soket[k].hak_fd) { haklari_birak(h); }
+    her (oto h in g_soket[k].dg_hak) { haklari_birak(h); }
+    g_soket[k].hak_bas.temizle();
+    g_soket[k].hak_son.temizle();
+    g_soket[k].hak_fd.temizle();
+    g_soket[k].hak_pid.temizle();
+    g_soket[k].dg_veri.temizle();
+    g_soket[k].dg_kaynak.temizle();
+    g_soket[k].dg_hak.temizle();
+    g_soket[k].dg_pid.temizle();
+    eger (g_soket[k].ad_tur == 2 && g_soket_soyut.var_mi(g_soket[k].ad) && g_soket_soyut.al(g_soket[k].ad) == k) {
+        g_soket_soyut.sil(g_soket[k].ad);
+    }
+    sayi d = g_soket[k].dugum;
+    eger (d >= 0 && d < g_fs.uzunluk() && g_fs[d].aygit == "soket" && g_fs[d].ek == k + 1) { g_fs[d].ek = 0; }
+    eger (g_soket[k].tampon >= 0) {
+        upp.tampon.birak(g_soket[k].tampon);
+        g_soket[k].tampon = -1;
+    }
+}
+
+// Eşi giden soket: iki yön de kapanır (okuma EOF, yazma EPIPE / ECONNREFUSED).
+fonk soket_kopar(sayi k) -> bos {
+    g_soket[k].alma_kapali = dogru;
+    g_soket[k].gonderme_kapali = dogru;
+    eger (g_soket[k].tur == SOCK_DGRAM) { g_soket[k].es = -2; } yoksa { g_soket[k].es = -1; }
+    g_soket[k].kusak += 1;
+}
+
+// ---------------------------------------------------------------- adresler
+
+// sockaddr_un okunur: g_adr_tur (0 adsız, 1 yol, 2 soyut) ve g_adr_ad. Dönüş 0 / -errno.
+sayi g_adr_tur = 0;
+metin g_adr_ad = "";
+
+fonk sc_unix_adres(sayi s, sayi adres, sayi uzunluk) -> sayi {
+    eger (uzunluk < 2 || uzunluk > SOCKADDR_UN_BOY) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(uzunluk);
+    ertele upp.tampon.birak(t);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, adres, t, 0, uzunluk)) { don -EFAULT; }
+    eger (upp.tampon.oku16(t, 0) != AF_UNIX) { don -EINVAL; }
+    g_adr_ad = "";
+    g_adr_tur = 0;
+    eger (uzunluk == 2) { don 0; }
+    eger (upp.tampon.oku8(t, 2) == 0) {
+        g_adr_tur = 2;
+        g_adr_ad = upp.metin.hex_kodla(upp.tampon.metin(t, 3, uzunluk - 3));
+        don 0;
+    }
+    sayi son = 2;
+    iken (son < uzunluk && upp.tampon.oku8(t, son) != 0) { son += 1; }
+    g_adr_tur = 1;
+    g_adr_ad = upp.tampon.metin(t, 2, son - 2);
+    don 0;
+}
+
+// Soketin adresi sockaddr_un olarak (tampon) ve uzunluğu (g_adr_boy).
+sayi g_adr_boy = 0;
+
+fonk soket_adres_tampon(sayi k) -> sayi {
+    sayi t = upp.tampon.yeni(SOCKADDR_UN_BOY);
+    upp.tampon.yaz16(t, 0, AF_UNIX);
+    g_adr_boy = 2;
+    eger (k < 0) { don t; }
+    eger (g_soket[k].ad_tur == 1) {
+        sayi n = upp.tampon.metin_yaz(t, 2, g_soket[k].ad);
+        g_adr_boy = 2 + n + 1;
+    } yoksa eger (g_soket[k].ad_tur == 2) {
+        sayi n = upp.tampon.metin_yaz(t, 3, upp.metin.hex_coz(g_soket[k].ad));
+        g_adr_boy = 3 + n;
+    }
+    don t;
+}
+
+// Adres çıktısı (accept, getsockname, getpeername, recvfrom): en çok *uzunluk_adr kadar
+// bayt, gerçek uzunluk *uzunluk_adr'e yazılır.
+fonk sc_adres_ver(sayi s, sayi adres, sayi uzunluk_adr, sayi t, sayi boy) -> sayi {
+    ertele upp.tampon.birak(t);
+    eger (adres == 0 || uzunluk_adr == 0) { don 0; }
+    sayi u = upp.tampon.yeni(4);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, uzunluk_adr, u, 0, 4)) {
+        upp.tampon.birak(u);
+        don -EFAULT;
+    }
+    sayi istenen = isaretli32(upp.tampon.oku32(u, 0));
+    eger (istenen < 0) {
+        upp.tampon.birak(u);
+        don -EINVAL;
+    }
+    sayi k = upp.min(istenen, boy);
+    eger (k > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, adres, t, 0, k)) {
+        upp.tampon.birak(u);
+        don -EFAULT;
+    }
+    upp.tampon.yaz32(u, 0, boy);
+    don sc_yapi_ver(s, uzunluk_adr, u, 4);
+}
+
+// Bağlanılacak soket: yol (düğüm), soyut ad; yoksa -errno.
+fonk soket_hedef_bul(sayi s) -> sayi {
+    eger (g_adr_tur == 2) {
+        eger (!g_soket_soyut.var_mi(g_adr_ad)) { don -ECONNREFUSED; }
+        don g_soket_soyut.al(g_adr_ad);
+    }
+    eger (g_adr_tur != 1) { don -EINVAL; }
+    metin yol = g_adr_ad;
+    eger (!upp.metin.baslar(yol, "/")) { yol = yol_birlestir(fs_yol(g_surec[s].cwd), yol); }
+    sayi no = fs_coz(yol);
+    eger (no < 0) { don -ENOENT; }
+    eger (g_fs[no].tur != D_AYGIT || g_fs[no].aygit != "soket" || g_fs[no].ek <= 0) { don -ECONNREFUSED; }
+    sayi k = g_fs[no].ek - 1;
+    eger (!g_soket[k].etkin) { don -ECONNREFUSED; }
+    don k;
+}
+
+// ---------------------------------------------------------------- socket, socketpair
+
+fonk soket_bayrak_ayir(sayi tur_bayrak) -> sayi => tur_bayrak & (SOCK_NONBLOCK | SOCK_CLOEXEC);
+
+// Tanımlayıcı: O_RDWR | O_NONBLOCK | O_CLOEXEC (SOCK_* bayrakları O_* ile aynı değerdedir).
+fonk soket_fd_ac(sayi s, sayi k, sayi bayrak) -> sayi {
+    sayi fd = fd_ayir(s);
+    eger (fd < 0) { don -EMFILE; }
+    fd_kur(s, fd, FD_SOKET, k, 2 | bayrak);
+    don fd;
+}
+
+fonk soket_tur_denetle(sayi aile, sayi tur_bayrak, sayi protokol) -> sayi {
+    eger (aile != AF_UNIX) { don -EAFNOSUPPORT; }
+    sayi tur = tur_bayrak & 0xF;
+    eger ((tur_bayrak & (0xFFFFFFFF - 0xF - SOCK_NONBLOCK - SOCK_CLOEXEC)) != 0) { don -EINVAL; }
+    eger (tur != SOCK_STREAM && tur != SOCK_DGRAM) { don -ESOCKTNOSUPPORT; }
+    eger (protokol != 0) { don -EPROTONOSUPPORT; }
+    don tur;
+}
+
+fonk sc_socket(sayi s, sayi aile, sayi tur_bayrak, sayi protokol) -> sayi {
+    sayi tur = soket_tur_denetle(aile, tur_bayrak, protokol);
+    eger (tur < 0) { don tur; }
+    // tanımlayıcı yoksa soket hiç kurulmaz
+    eger (fd_ayir(s) < 0) { don -EMFILE; }
+    don soket_fd_ac(s, soket_yeni(tur), soket_bayrak_ayir(tur_bayrak));
+}
+
+fonk sc_socketpair(sayi s, sayi aile, sayi tur_bayrak, sayi protokol, sayi cift) -> sayi {
+    sayi tur = soket_tur_denetle(aile, tur_bayrak, protokol);
+    eger (tur < 0) { don tur; }
+    sayi a = soket_yeni(tur);
+    sayi b = soket_yeni(tur);
+    g_soket[a].hal = 2;
+    g_soket[b].hal = 2;
+    g_soket[a].es = b;
+    g_soket[b].es = a;
+    g_soket[a].es_pid = g_surec[s].pid;
+    g_soket[b].es_pid = g_surec[s].pid;
+    sayi bayrak = soket_bayrak_ayir(tur_bayrak);
+    sayi fa = soket_fd_ac(s, a, bayrak);
+    eger (fa < 0) {
+        soket_yok_et(b);
+        soket_yok_et(a);
+        don fa;
+    }
+    sayi fb = soket_fd_ac(s, b, bayrak);
+    eger (fb < 0) {
+        soket_yok_et(b);
+        fd_kur(s, fa, FD_KAPALI, -1, 0);
+        don fb;
+    }
+    sayi t = upp.tampon.yeni(8);
+    upp.tampon.yaz32(t, 0, fa);
+    upp.tampon.yaz32(t, 4, fb);
+    eger (sc_yapi_ver(s, cift, t, 8) < 0) {
+        fd_kur(s, fa, FD_KAPALI, -1, 0);
+        fd_kur(s, fb, FD_KAPALI, -1, 0);
+        don -EFAULT;
+    }
+    don 0;
+}
+
+// Tanımlayıcının soketi; değilse -EBADF / -ENOTSOCK.
+fonk soket_fd(sayi s, sayi fd) -> sayi {
+    eger (!fd_gecerli(s, fd)) { don -EBADF; }
+    sayi y = fd_yer(s, fd);
+    eger (g_fd_tur[y] != FD_SOKET) { don -ENOTSOCK; }
+    don g_fd_no[y];
+}
+
+// ---------------------------------------------------------------- bind, listen, connect, accept
+
+fonk sc_bind(sayi s, sayi fd, sayi adres, sayi uzunluk) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    sayi r = sc_unix_adres(s, adres, uzunluk);
+    eger (r < 0) { don r; }
+    // Linux sırası: yol adresinde önce düğüm (EADDRINUSE), sonra soketin adı (EINVAL)
+    eger (g_adr_tur == 1) {
+        metin y = g_adr_ad;
+        eger (!upp.metin.baslar(y, "/")) { y = yol_birlestir(fs_yol(g_surec[s].cwd), y); }
+        eger (fs_coz(y) >= 0) { don -EADDRINUSE; }
+    }
+    eger (g_soket[k].ad_tur != 0) { don -EINVAL; }
+    eger (g_adr_tur == 0) {
+        // otomatik ad: soyut ad alanında beş onaltılık hane
+        g_adr_tur = 2;
+        iken (dogru) {
+            g_soket_otoad += 1;
+            g_adr_ad = upp.metin.hex_kodla(onaltilik_dolgu(g_soket_otoad, 5));
+            eger (!g_soket_soyut.var_mi(g_adr_ad)) { dur; }
+        }
+    }
+    eger (g_adr_tur == 2) {
+        eger (g_soket_soyut.var_mi(g_adr_ad)) { don -EADDRINUSE; }
+        g_soket_soyut.koy(g_adr_ad, k);
+        g_soket[k].ad_tur = 2;
+        g_soket[k].ad = g_adr_ad;
+        don 0;
+    }
+    metin yol = g_adr_ad;
+    eger (!upp.metin.baslar(yol, "/")) { yol = yol_birlestir(fs_yol(g_surec[s].cwd), yol); }
+    eger (fs_coz(yol) >= 0) { don -EADDRINUSE; }
+    sayi ust = fs_coz(yol_dizin(yol));
+    eger (ust < 0) { don -ENOENT; }
+    eger (!fs_dizin_mi(ust)) { don -ENOTDIR; }
+    eger (fs_salt_okunur(ust)) { don -EROFS; }
+    // soket düğümü yalnızca bellekteki dosya sistemlerinde (tmpfs, rootfs)
+    eger (!bag_bellekte(g_fs[ust].bag)) { don -EOPNOTSUPP; }
+    sayi no = fs_dugum_ekle(ust, yol_ad(yol), D_AYGIT, sc_kip(s, 511));
+    g_fs[no].aygit = "soket";
+    g_fs[no].ek = k + 1;
+    g_soket[k].ad_tur = 1;
+    g_soket[k].ad = g_adr_ad;
+    g_soket[k].dugum = no;
+    don 0;
+}
+
+fonk sc_listen(sayi s, sayi fd, sayi kuyruk) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (g_soket[k].tur != SOCK_STREAM) { don -EOPNOTSUPP; }
+    eger (g_soket[k].hal == 2 || g_soket[k].ad_tur == 0) { don -EINVAL; }
+    sayi b = isaretli32(kuyruk);
+    eger (b < 0 || b > 4096) { b = 4096; }
+    g_soket[k].kuyruk = b;
+    g_soket[k].hal = 1;
+    // dinleyenin kimliği bağlananın SO_PEERCRED'idir
+    g_soket[k].es_pid = g_surec[s].pid;
+    g_soket[k].kusak += 1;
+    don 0;
+}
+
+fonk soket_engelsiz(sayi s, sayi fd, sayi bayrak) -> mantik {
+    eger ((bayrak & MSG_DONTWAIT) != 0) { don dogru; }
+    don (g_fd_bayrak[fd_yer(s, fd)] & O_NONBLOCK) != 0;
+}
+
+fonk sc_connect(sayi s, sayi fd, sayi adres, sayi uzunluk) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    // AF_UNSPEC: datagram soketinin varsayılan eşi kaldırılır
+    eger (uzunluk >= 2 && g_soket[k].tur == SOCK_DGRAM) {
+        sayi t = upp.tampon.yeni(2);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, adres, t, 0, 2);
+        sayi aile = upp.tampon.oku16(t, 0);
+        upp.tampon.birak(t);
+        eger (ok && aile == 0) {
+            g_soket[k].es = -1;
+            g_soket[k].hal = 0;
+            don 0;
+        }
+    }
+    sayi r = sc_unix_adres(s, adres, uzunluk);
+    eger (r < 0) { don r; }
+    eger (g_adr_tur == 0) { don -EINVAL; }
+    eger (g_soket[k].tur == SOCK_STREAM && g_soket[k].hal == 2) { don -EISCONN; }
+    eger (g_soket[k].hal == 1) { don -EINVAL; }
+    sayi h = soket_hedef_bul(s);
+    eger (h < 0) { don h; }
+    eger (g_soket[h].tur != g_soket[k].tur) { don -EPROTOTYPE; }
+    eger (g_soket[k].tur == SOCK_DGRAM) {
+        g_soket[k].es = h;
+        g_soket[k].hal = 2;
+        g_soket[k].alma_kapali = yanlis;
+        g_soket[k].gonderme_kapali = yanlis;
+        don 0;
+    }
+    eger (g_soket[h].hal != 1) { don -ECONNREFUSED; }
+    // kabul kuyruğu doluysa beklenir
+    iken (g_soket[h].bekleyen.uzunluk() > g_soket[h].kuyruk) {
+        eger (soket_engelsiz(s, fd, 0)) { don -EAGAIN; }
+        sayi b = sc_bekle(s);
+        eger (b < 0) { don b; }
+        eger (!g_soket[h].etkin || g_soket[h].hal != 1) { don -ECONNREFUSED; }
+    }
+    // sunucu tarafı soket hemen kurulur; accept onu kuyruktan alır
+    sayi sv = soket_yeni(SOCK_STREAM);
+    g_soket[sv].hal = 2;
+    g_soket[sv].es = k;
+    g_soket[sv].es_pid = g_surec[s].pid;
+    g_soket[sv].ad_tur = g_soket[h].ad_tur;
+    g_soket[sv].ad = g_soket[h].ad;
+    g_soket[sv].passcred = g_soket[h].passcred;
+    g_soket[k].hal = 2;
+    g_soket[k].es = sv;
+    g_soket[k].es_pid = g_soket[h].es_pid;
+    g_soket[h].bekleyen.ekle(sv);
+    g_soket[h].kusak += 1;
+    g_soket[k].kusak += 1;
+    don 0;
+}
+
+fonk sc_accept(sayi s, sayi fd, sayi adres, sayi uzunluk_adr, sayi bayrak) -> sayi {
+    eger ((bayrak & (0xFFFFFFFF - SOCK_NONBLOCK - SOCK_CLOEXEC)) != 0) { don -EINVAL; }
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (g_soket[k].tur != SOCK_STREAM) { don -EOPNOTSUPP; }
+    eger (g_soket[k].hal != 1) { don -EINVAL; }
+    iken (g_soket[k].bekleyen.uzunluk() == 0) {
+        eger (soket_engelsiz(s, fd, 0)) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi yeni = fd_ayir(s);
+    eger (yeni < 0) { don -EMFILE; }
+    sayi sv = g_soket[k].bekleyen[0];
+    g_soket[k].bekleyen.sil(0);
+    fd_kur(s, yeni, FD_SOKET, sv, 2 | bayrak);
+    sayi es = g_soket[sv].es;
+    eger (es < 0 || !g_soket[es].etkin) { es = -1; }
+    sayi t = soket_adres_tampon(es);
+    sayi r = sc_adres_ver(s, adres, uzunluk_adr, t, g_adr_boy);
+    eger (r < 0) {
+        fd_kur(s, yeni, FD_KAPALI, -1, 0);
+        don r;
+    }
+    don yeni;
+}
+
+fonk sc_getsockname(sayi s, sayi fd, sayi adres, sayi uzunluk_adr, mantik es_mi) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    sayi hedef = k;
+    eger (es_mi) {
+        sayi es = g_soket[k].es;
+        eger (g_soket[k].hal != 2 || es < 0 || !g_soket[es].etkin) { don -ENOTCONN; }
+        hedef = es;
+    }
+    sayi t = soket_adres_tampon(hedef);
+    eger (adres == 0 || uzunluk_adr == 0) {
+        upp.tampon.birak(t);
+        don -EFAULT;
+    }
+    don sc_adres_ver(s, adres, uzunluk_adr, t, g_adr_boy);
+}
+
+fonk sc_shutdown(sayi s, sayi fd, sayi nasil) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (nasil < 0 || nasil > 2) { don -EINVAL; }
+    // Linux'ta bağlı olmayan sokette de başarılıdır (yalnızca bayraklar kurulur)
+    sayi es = g_soket[k].es;
+    eger (g_soket[k].hal != 2) { es = -1; }
+    // SHUT_RD: bizim okumamız ve eşin yazması; SHUT_WR: bizim yazmamız ve eşin okuması
+    eger (nasil == 0 || nasil == 2) {
+        g_soket[k].alma_kapali = dogru;
+        eger (es >= 0 && g_soket[k].tur == SOCK_STREAM) { g_soket[es].gonderme_kapali = dogru; }
+    }
+    eger (nasil == 1 || nasil == 2) {
+        g_soket[k].gonderme_kapali = dogru;
+        eger (es >= 0 && g_soket[k].tur == SOCK_STREAM) { g_soket[es].alma_kapali = dogru; }
+    }
+    g_soket[k].kusak += 1;
+    eger (es >= 0) { g_soket[es].kusak += 1; }
+    don 0;
+}
+
+// ---------------------------------------------------------------- gönderme
+
+// Gönderen sürecin tanımlayıcılarından SCM_RIGHTS hakları (her fd için tur, no, konum,
+// bayrak; yoldayken nesnelerin sayacı tutulur). Hata g_sc_hata'da.
+fonk haklari_topla(sayi s, liste[sayi] fdler) -> liste[sayi] {
+    liste[sayi] h;
+    g_sc_hata = 0;
+    her (oto fd in fdler) {
+        eger (!fd_gecerli(s, fd)) {
+            g_sc_hata = -EBADF;
+            liste[sayi] bos_h;
+            don bos_h;
+        }
+    }
+    her (oto fd in fdler) {
+        sayi y = fd_yer(s, fd);
+        h.ekle(g_fd_tur[y]);
+        h.ekle(g_fd_no[y]);
+        h.ekle(g_fd_konum[y]);
+        h.ekle(g_fd_bayrak[y] - (g_fd_bayrak[y] & O_CLOEXEC));
+        fd_nesne_al(g_fd_tur[y], g_fd_no[y]);
+    }
+    don h;
+}
+
+// EPIPE: MSG_NOSIGNAL yoksa SIGPIPE de gönderilir.
+fonk soket_epipe(sayi s, sayi bayrak) -> sayi {
+    eger ((bayrak & MSG_NOSIGNAL) == 0) { sinyal_gonder(s, s, SIGPIPE); }
+    don -EPIPE;
+}
+
+// t'deki n bayt (ve haklar) gönderilir. hedef: datagram için açık adres (-1: eş).
+fonk soket_gonder(sayi s, sayi fd, sayi k, sayi t, sayi n, sayi hedef, liste[sayi] haklar, sayi bayrak) -> sayi {
+    eger ((bayrak & MSG_OOB) != 0) {
+        haklari_birak(haklar);
+        don -EOPNOTSUPP;
+    }
+    eger (g_soket[k].tur == SOCK_DGRAM) { don soket_dgram_gonder(s, fd, k, t, n, hedef, haklar, bayrak); }
+    eger (hedef >= 0 || hedef == -3) {
+        haklari_birak(haklar);
+        eger (g_soket[k].hal == 2) { don -EISCONN; }
+        don -EOPNOTSUPP;
+    }
+    eger (g_soket[k].hal != 2) {
+        haklari_birak(haklar);
+        don -ENOTCONN;
+    }
+    sayi es = g_soket[k].es;
+    eger (g_soket[k].gonderme_kapali || es < 0 || !g_soket[es].etkin || g_soket[es].alma_kapali) {
+        haklari_birak(haklar);
+        don soket_epipe(s, bayrak);
+    }
+    eger (haklar.uzunluk() > 0) {
+        g_soket[es].hak_bas.ekle(g_soket[es].yazilan);
+        g_soket[es].hak_son.ekle(g_soket[es].yazilan + n);
+        g_soket[es].hak_fd.ekle(haklar);
+        g_soket[es].hak_pid.ekle(g_surec[s].pid);
+    }
+    sayi gonderilen = 0;
+    iken (gonderilen < n) {
+        es = g_soket[k].es;
+        eger (es < 0 || !g_soket[es].etkin || g_soket[es].alma_kapali || g_soket[k].gonderme_kapali) {
+            eger (gonderilen > 0) { don gonderilen; }
+            don soket_epipe(s, bayrak);
+        }
+        sayi bos_yer = SOKET_TAMPON - g_soket[es].dolu;
+        eger (bos_yer == 0) {
+            eger (soket_engelsiz(s, fd, bayrak)) {
+                eger (gonderilen > 0) { don gonderilen; }
+                don -EAGAIN;
+            }
+            sayi r = sc_bekle(s);
+            eger (r < 0) {
+                eger (gonderilen > 0) { don gonderilen; }
+                don r;
+            }
+            devam;
+        }
+        sayi parca = upp.min(bos_yer, n - gonderilen);
+        sayi kuyruk = (g_soket[es].bas + g_soket[es].dolu) % SOKET_TAMPON;
+        sayi ilk = upp.min(parca, SOKET_TAMPON - kuyruk);
+        upp.tampon.kopyala(g_soket[es].tampon, kuyruk, t, gonderilen, ilk);
+        eger (parca > ilk) { upp.tampon.kopyala(g_soket[es].tampon, 0, t, gonderilen + ilk, parca - ilk); }
+        g_soket[es].dolu += parca;
+        g_soket[es].yazilan += parca;
+        g_soket[es].kusak += 1;
+        gonderilen += parca;
+    }
+    don gonderilen;
+}
+
+fonk soket_dgram_gonder(sayi s, sayi fd, sayi k, sayi t, sayi n, sayi hedef, liste[sayi] haklar, sayi bayrak) -> sayi {
+    sayi h = hedef;
+    eger (h == -1) {
+        h = g_soket[k].es;
+        eger (h == -2) {
+            haklari_birak(haklar);
+            don -ECONNREFUSED;
+        }
+        eger (h < 0) {
+            haklari_birak(haklar);
+            don -ENOTCONN;
+        }
+    }
+    eger (!g_soket[h].etkin) {
+        haklari_birak(haklar);
+        don -ECONNREFUSED;
+    }
+    // hedef başka biriyle bağlıysa yalnızca o gönderebilir
+    eger (g_soket[h].es >= 0 && g_soket[h].es != k) {
+        haklari_birak(haklar);
+        don -EPERM;
+    }
+    eger (g_soket[k].gonderme_kapali || g_soket[h].alma_kapali) {
+        haklari_birak(haklar);
+        don soket_epipe(s, bayrak);
+    }
+    eger (n > g_soket[h].rcvbuf) {
+        haklari_birak(haklar);
+        don -EMSGSIZE;
+    }
+    iken (g_soket[h].dg_veri.uzunluk() >= DGRAM_KUYRUK) {
+        eger (soket_engelsiz(s, fd, bayrak)) {
+            haklari_birak(haklar);
+            don -EAGAIN;
+        }
+        sayi r = sc_bekle(s);
+        eger (r < 0) {
+            haklari_birak(haklar);
+            don r;
+        }
+        eger (!g_soket[h].etkin) {
+            haklari_birak(haklar);
+            don -ECONNREFUSED;
+        }
+    }
+    g_soket[h].dg_veri.ekle(upp.tampon.metin(t, 0, n));
+    // kaynak adresi: gönderenin adı (adsızsa "")
+    metin kaynak = "";
+    eger (g_soket[k].ad_tur != 0) {
+        sayi a = soket_adres_tampon(k);
+        kaynak = upp.tampon.metin(a, 0, g_adr_boy);
+        upp.tampon.birak(a);
+    }
+    g_soket[h].dg_kaynak.ekle(kaynak);
+    g_soket[h].dg_hak.ekle(haklar);
+    g_soket[h].dg_pid.ekle(g_surec[s].pid);
+    g_soket[h].kusak += 1;
+    don n;
+}
+
+// ---------------------------------------------------------------- alma
+
+// Alma sonucu: veri g_alim_t tamponunda; kaynak adres g_alim_kaynak; haklar
+// g_alim_hak; gönderen g_alim_pid; g_alim_kesik datagram kesildi mi.
+metin g_alim_kaynak = "";
+liste[sayi] g_alim_hak;
+sayi g_alim_pid = 0;
+mantik g_alim_kesik = yanlis;
+
+fonk soket_al_akis(sayi s, sayi fd, sayi k, sayi t, sayi n, sayi bayrak) -> sayi {
+    eger (g_soket[k].hal != 2) { don -EINVAL; }
+    eger ((bayrak & MSG_OOB) != 0) { don -EOPNOTSUPP; }
+    mantik peek = (bayrak & MSG_PEEK) != 0;
+    sayi alinan = 0;
+    iken (dogru) {
+        sayi var = g_soket[k].dolu;
+        eger (var > 0) {
+            sayi parca = upp.min(var, n - alinan);
+            sayi konum = g_soket[k].okunan;
+            // SCM_RIGHTS taşıyan iletiye değen okuma o iletinin sonunda durur, haklarını alır
+            mantik hak_var = yanlis;
+            eger (g_soket[k].hak_bas.uzunluk() > 0 && g_soket[k].hak_bas[0] < konum + parca) {
+                parca = upp.min(parca, g_soket[k].hak_son[0] - konum);
+                hak_var = dogru;
+            }
+            sayi bas = g_soket[k].bas;
+            sayi ilk = upp.min(parca, SOKET_TAMPON - bas);
+            upp.tampon.kopyala(t, alinan, g_soket[k].tampon, bas, ilk);
+            eger (parca > ilk) { upp.tampon.kopyala(t, alinan + ilk, g_soket[k].tampon, 0, parca - ilk); }
+            alinan += parca;
+            g_alim_pid = g_soket[k].es_pid;
+            eger (hak_var) {
+                g_alim_pid = g_soket[k].hak_pid[0];
+                eger (!peek) {
+                    her (oto x in g_soket[k].hak_fd[0]) { g_alim_hak.ekle(x); }
+                }
+            }
+            eger (!peek) {
+                g_soket[k].bas = (bas + parca) % SOKET_TAMPON;
+                g_soket[k].dolu -= parca;
+                g_soket[k].okunan += parca;
+                g_soket[k].kusak += 1;
+                eger (hak_var) {
+                    g_soket[k].hak_bas.sil(0);
+                    g_soket[k].hak_son.sil(0);
+                    g_soket[k].hak_fd.sil(0);
+                    g_soket[k].hak_pid.sil(0);
+                }
+            }
+            // MSG_WAITALL: n dolana, EOF'a ya da haklı iletinin sonuna dek
+            eger (peek || hak_var || alinan >= n || (bayrak & MSG_WAITALL) == 0) { don alinan; }
+            devam;
+        }
+        eger (g_soket[k].alma_kapali) { don alinan; }
+        eger (soket_engelsiz(s, fd, bayrak)) {
+            eger (alinan > 0) { don alinan; }
+            don -EAGAIN;
+        }
+        sayi r = sc_bekle(s);
+        eger (r < 0) {
+            eger (alinan > 0) { don alinan; }
+            don r;
+        }
+    }
+    don alinan;
+}
+
+fonk soket_al_dgram(sayi s, sayi fd, sayi k, sayi t, sayi n, sayi bayrak) -> sayi {
+    iken (g_soket[k].dg_veri.uzunluk() == 0) {
+        eger (g_soket[k].alma_kapali) { don 0; }
+        eger (soket_engelsiz(s, fd, bayrak)) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    metin veri = g_soket[k].dg_veri[0];
+    sayi boy = bayt_say(veri);
+    sayi kopya = upp.min(n, boy);
+    eger (kopya > 0) {
+        sayi v = upp.tampon.yeni(boy + 1);
+        upp.tampon.metin_yaz(v, 0, veri);
+        upp.tampon.kopyala(t, 0, v, 0, kopya);
+        upp.tampon.birak(v);
+    }
+    g_alim_kaynak = g_soket[k].dg_kaynak[0];
+    g_alim_pid = g_soket[k].dg_pid[0];
+    g_alim_kesik = kopya < boy;
+    eger ((bayrak & MSG_PEEK) == 0) {
+        her (oto x in g_soket[k].dg_hak[0]) { g_alim_hak.ekle(x); }
+        g_soket[k].dg_veri.sil(0);
+        g_soket[k].dg_kaynak.sil(0);
+        g_soket[k].dg_hak.sil(0);
+        g_soket[k].dg_pid.sil(0);
+        g_soket[k].kusak += 1;
+    }
+    // MSG_TRUNC: iletinin gerçek uzunluğu döner
+    eger ((bayrak & MSG_TRUNC) != 0) { don boy; }
+    don kopya;
+}
+
+fonk soket_al(sayi s, sayi fd, sayi k, sayi t, sayi n, sayi bayrak) -> sayi {
+    g_alim_kaynak = "";
+    g_alim_hak.temizle();
+    g_alim_pid = 0;
+    g_alim_kesik = yanlis;
+    eger (g_soket[k].tur == SOCK_DGRAM) { don soket_al_dgram(s, fd, k, t, n, bayrak); }
+    sayi r = soket_al_akis(s, fd, k, t, n, bayrak);
+    // akışta kaynak: eşin adı (adsızsa yok)
+    sayi es = g_soket[k].es;
+    eger (es >= 0 && g_soket[es].etkin && g_soket[es].ad_tur != 0) {
+        sayi a = soket_adres_tampon(es);
+        g_alim_kaynak = upp.tampon.metin(a, 0, g_adr_boy);
+        upp.tampon.birak(a);
+    }
+    don r;
+}
+
+// read/write: bayraksız recv/send; read ile gelen haklar kapatılır.
+fonk sc_soket_oku(sayi s, sayi y, sayi fd, sayi buf, sayi n) -> sayi {
+    sayi k = g_fd_no[y];
+    sayi t = upp.tampon.yeni(upp.max(n, 1));
+    ertele upp.tampon.birak(t);
+    sayi r = soket_al(s, fd, k, t, n, 0);
+    haklari_birak(g_alim_hak);
+    g_alim_hak.temizle();
+    eger (r <= 0) { don r; }
+    eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, buf, t, 0, upp.min(r, n))) { don -EFAULT; }
+    don r;
+}
+
+fonk sc_soket_yaz(sayi s, sayi y, sayi fd, sayi buf, sayi n) -> sayi {
+    sayi k = g_fd_no[y];
+    sayi t = upp.tampon.yeni(upp.max(n, 1));
+    ertele upp.tampon.birak(t);
+    eger (n > 0 && !upp.cekirdek.kullanici_oku(g_surec[s].ka, buf, t, 0, n)) { don -EFAULT; }
+    liste[sayi] bos_h;
+    don soket_gonder(s, fd, k, t, n, -1, bos_h, 0);
+}
+
+// sendto/recvfrom
+fonk sc_sendto(sayi s, sayi fd, sayi buf, sayi n, sayi bayrak, sayi adres, sayi uzunluk) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (n < 0) { don -EINVAL; }
+    sayi hedef = -1;
+    eger (adres != 0) {
+        sayi r = sc_unix_adres(s, adres, uzunluk);
+        eger (r < 0) { don r; }
+        eger (g_soket[k].tur == SOCK_STREAM) {
+            hedef = -3;
+        } yoksa {
+            hedef = soket_hedef_bul(s);
+            eger (hedef < 0) { don hedef; }
+            eger (g_soket[hedef].tur != SOCK_DGRAM) { don -EPROTOTYPE; }
+        }
+    }
+    sayi t = upp.tampon.yeni(upp.max(n, 1));
+    ertele upp.tampon.birak(t);
+    eger (n > 0 && !upp.cekirdek.kullanici_oku(g_surec[s].ka, buf, t, 0, n)) { don -EFAULT; }
+    liste[sayi] bos_h;
+    don soket_gonder(s, fd, k, t, n, hedef, bos_h, bayrak);
+}
+
+fonk sc_recvfrom(sayi s, sayi fd, sayi buf, sayi n, sayi bayrak, sayi adres, sayi uzunluk_adr) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (n < 0) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(upp.max(n, 1));
+    ertele upp.tampon.birak(t);
+    sayi r = soket_al(s, fd, k, t, n, bayrak);
+    haklari_birak(g_alim_hak);
+    g_alim_hak.temizle();
+    eger (r < 0) { don r; }
+    sayi kopya = upp.min(r, n);
+    eger (kopya > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, buf, t, 0, kopya)) { don -EFAULT; }
+    eger (adres != 0) {
+        sayi a = upp.tampon.yeni(SOCKADDR_UN_BOY);
+        sayi boy = upp.tampon.metin_yaz(a, 0, g_alim_kaynak);
+        sayi h = sc_adres_ver(s, adres, uzunluk_adr, a, boy);
+        eger (h < 0) { don h; }
+    }
+    don r;
+}
+
+// ---------------------------------------------------------------- sendmsg / recvmsg
+
+// struct msghdr (56 bayt): name 0, namelen 8, iov 16, iovlen 24, control 32,
+// controllen 40, flags 48. cmsghdr: len (8), level (4), type (4), veri; 8'e hizalı.
+fonk sc_iov_oku(sayi s, sayi iov, sayi adet) -> liste[sayi] {
+    liste[sayi] L;
+    g_sc_hata = 0;
+    eger (adet < 0 || adet > 1024) {
+        g_sc_hata = -EINVAL;
+        don L;
+    }
+    eger (adet == 0) { don L; }
+    sayi t = upp.tampon.yeni(adet * 16);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, iov, t, 0, adet * 16)) {
+        upp.tampon.birak(t);
+        g_sc_hata = -EFAULT;
+        don L;
+    }
+    her (sayi i in 0..adet) {
+        L.ekle(upp.tampon.oku64(t, i * 16));
+        L.ekle(upp.tampon.oku64(t, i * 16 + 8));
+    }
+    upp.tampon.birak(t);
+    don L;
+}
+
+fonk sc_sendmsg(sayi s, sayi fd, sayi mesaj, sayi bayrak) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    sayi m = upp.tampon.yeni(56);
+    ertele upp.tampon.birak(m);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, mesaj, m, 0, 56)) { don -EFAULT; }
+    sayi ad = upp.tampon.oku64(m, 0);
+    sayi ad_boy = upp.tampon.oku32(m, 8);
+    liste[sayi] iov = sc_iov_oku(s, upp.tampon.oku64(m, 16), upp.tampon.oku64(m, 24));
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    sayi kontrol = upp.tampon.oku64(m, 32);
+    sayi kontrol_boy = upp.tampon.oku64(m, 40);
+    // denetim iletileri: SCM_RIGHTS tanımlayıcıları
+    liste[sayi] fdler;
+    eger (kontrol_boy > 0) {
+        eger (kontrol_boy > 65536) { don -ENOBUFS; }
+        sayi c = upp.tampon.yeni(kontrol_boy);
+        ertele upp.tampon.birak(c);
+        eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, kontrol, c, 0, kontrol_boy)) { don -EFAULT; }
+        sayi o = 0;
+        iken (o + 16 <= kontrol_boy) {
+            sayi cl = upp.tampon.oku64(c, o);
+            eger (cl < 16 || o + cl > kontrol_boy) { don -EINVAL; }
+            sayi seviye = upp.tampon.oku32(c, o + 8);
+            sayi tur = upp.tampon.oku32(c, o + 12);
+            eger (seviye != SOL_SOCKET) { don -EINVAL; }
+            eger (tur == SCM_RIGHTS) {
+                sayi adet = (cl - 16) / 4;
+                eger (fdler.uzunluk() + adet > SCM_EN_COK_FD) { don -EINVAL; }
+                her (sayi i in 0..adet) { fdler.ekle(isaretli32(upp.tampon.oku32(c, o + 16 + i * 4))); }
+            } yoksa eger (tur != SCM_CREDENTIALS) {
+                don -EINVAL;
+            }
+            o += (cl + 7) / 8 * 8;
+        }
+    }
+    sayi hedef = -1;
+    eger (ad != 0 && ad_boy > 0) {
+        sayi r = sc_unix_adres(s, ad, ad_boy);
+        eger (r < 0) { don r; }
+        eger (g_soket[k].tur == SOCK_STREAM) {
+            hedef = -3;
+        } yoksa {
+            hedef = soket_hedef_bul(s);
+            eger (hedef < 0) { don hedef; }
+        }
+    }
+    // veri iov'lardan tek tampona
+    sayi toplam = 0;
+    sayi i = 1;
+    iken (i < iov.uzunluk()) {
+        toplam += iov[i];
+        i += 2;
+    }
+    eger (toplam < 0 || toplam > 16777216) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(upp.max(toplam, 1));
+    ertele upp.tampon.birak(t);
+    sayi o2 = 0;
+    i = 0;
+    iken (i < iov.uzunluk()) {
+        eger (iov[i + 1] > 0 && !upp.cekirdek.kullanici_oku(g_surec[s].ka, iov[i], t, o2, iov[i + 1])) { don -EFAULT; }
+        o2 += iov[i + 1];
+        i += 2;
+    }
+    liste[sayi] haklar = haklari_topla(s, fdler);
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    don soket_gonder(s, fd, k, t, toplam, hedef, haklar, bayrak);
+}
+
+// Alınan haklar alıcının tanımlayıcı tablosuna kurulur; sığmayanlar kapatılır.
+// Dönüş: kurulan fd'ler.
+fonk haklari_kur(sayi s, liste[sayi] h, sayi sigar, mantik cloexec) -> liste[sayi] {
+    liste[sayi] fdler;
+    sayi i = 0;
+    iken (i + 3 < h.uzunluk()) {
+        sayi fd = -1;
+        eger (fdler.uzunluk() < sigar) { fd = fd_ayir(s); }
+        eger (fd >= 0) {
+            sayi bayrak = h[i + 3];
+            eger (cloexec) { bayrak = bayrak | O_CLOEXEC; }
+            fd_ata(fd_yer(s, fd), h[i], h[i + 1], h[i + 2], bayrak);
+            fdler.ekle(fd);
+        }
+        // yoldaki sayaç bırakılır (kurulduysa tanımlayıcı kendi sayacını aldı)
+        fd_nesne_birak(h[i], h[i + 1]);
+        i += 4;
+    }
+    don fdler;
+}
+
+fonk sc_recvmsg(sayi s, sayi fd, sayi mesaj, sayi bayrak) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    sayi m = upp.tampon.yeni(56);
+    ertele upp.tampon.birak(m);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, mesaj, m, 0, 56)) { don -EFAULT; }
+    liste[sayi] iov = sc_iov_oku(s, upp.tampon.oku64(m, 16), upp.tampon.oku64(m, 24));
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    sayi toplam = 0;
+    sayi i = 1;
+    iken (i < iov.uzunluk()) {
+        toplam += iov[i];
+        i += 2;
+    }
+    eger (toplam < 0 || toplam > 16777216) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(upp.max(toplam, 1));
+    ertele upp.tampon.birak(t);
+    sayi r = soket_al(s, fd, k, t, toplam, bayrak);
+    eger (r < 0) {
+        haklari_birak(g_alim_hak);
+        g_alim_hak.temizle();
+        don r;
+    }
+    // veri iov'lara dağıtılır
+    sayi kalan = upp.min(r, toplam);
+    sayi o = 0;
+    i = 0;
+    iken (i < iov.uzunluk() && kalan > 0) {
+        sayi parca = upp.min(kalan, iov[i + 1]);
+        eger (parca > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, iov[i], t, o, parca)) {
+            haklari_birak(g_alim_hak);
+            g_alim_hak.temizle();
+            don -EFAULT;
+        }
+        o += parca;
+        kalan -= parca;
+        i += 2;
+    }
+    sayi msg_bayrak = 0;
+    eger (g_alim_kesik) { msg_bayrak = msg_bayrak | MSG_TRUNC; }
+    // adres
+    sayi ad = upp.tampon.oku64(m, 0);
+    eger (ad != 0) {
+        sayi istenen = upp.tampon.oku32(m, 8);
+        sayi boy = bayt_say(g_alim_kaynak);
+        eger (boy > 0 && istenen > 0) { sc_yaz_metin(s, ad, g_alim_kaynak, 0, upp.min(boy, istenen)); }
+        upp.tampon.yaz32(m, 8, boy);
+    }
+    // denetim iletileri: SCM_CREDENTIALS (SO_PASSCRED), SCM_RIGHTS
+    sayi kontrol = upp.tampon.oku64(m, 32);
+    sayi kontrol_boy = upp.tampon.oku64(m, 40);
+    sayi c = upp.tampon.yeni(upp.max(kontrol_boy, 1));
+    ertele upp.tampon.birak(c);
+    sayi co = 0;
+    eger (g_soket[k].passcred) {
+        eger (kontrol_boy - co >= 32) {
+            upp.tampon.yaz64(c, co, 28);
+            upp.tampon.yaz32(c, co + 8, SOL_SOCKET);
+            upp.tampon.yaz32(c, co + 12, SCM_CREDENTIALS);
+            upp.tampon.yaz32(c, co + 16, g_alim_pid);
+            co += 32;
+        } yoksa {
+            msg_bayrak = msg_bayrak | MSG_CTRUNC;
+        }
+    }
+    eger (g_alim_hak.uzunluk() > 0) {
+        sayi adet = g_alim_hak.uzunluk() / 4;
+        sayi sigar = 0;
+        eger (kontrol_boy - co >= 16) { sigar = (kontrol_boy - co - 16) / 4; }
+        eger (sigar < adet) { msg_bayrak = msg_bayrak | MSG_CTRUNC; }
+        liste[sayi] fdler = haklari_kur(s, g_alim_hak, sigar, (bayrak & MSG_CMSG_CLOEXEC) != 0);
+        g_alim_hak.temizle();
+        eger (fdler.uzunluk() > 0) {
+            sayi cl = 16 + fdler.uzunluk() * 4;
+            upp.tampon.yaz64(c, co, cl);
+            upp.tampon.yaz32(c, co + 8, SOL_SOCKET);
+            upp.tampon.yaz32(c, co + 12, SCM_RIGHTS);
+            her (sayi j in 0..fdler.uzunluk()) { upp.tampon.yaz32(c, co + 16 + j * 4, fdler[j]); }
+            co += upp.min((cl + 7) / 8 * 8, kontrol_boy - co);
+        }
+    }
+    eger (co > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, kontrol, c, 0, co)) { don -EFAULT; }
+    upp.tampon.yaz64(m, 40, co);
+    upp.tampon.yaz32(m, 48, msg_bayrak);
+    eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, mesaj, m, 0, 56)) { don -EFAULT; }
+    don r;
+}
+
+// readv/writev: iov'lar tek ileti olarak gönderilir / alınır.
+fonk soket_vektor(sayi s, sayi fd, sayi iov_adr, sayi adet, mantik yaz) -> sayi {
+    sayi k = g_fd_no[fd_yer(s, fd)];
+    liste[sayi] iov = sc_iov_oku(s, iov_adr, adet);
+    eger (g_sc_hata < 0) { don g_sc_hata; }
+    sayi toplam = 0;
+    sayi i = 1;
+    iken (i < iov.uzunluk()) {
+        toplam += iov[i];
+        i += 2;
+    }
+    eger (toplam < 0 || toplam > 16777216) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(upp.max(toplam, 1));
+    ertele upp.tampon.birak(t);
+    eger (yaz) {
+        sayi o = 0;
+        i = 0;
+        iken (i < iov.uzunluk()) {
+            eger (iov[i + 1] > 0 && !upp.cekirdek.kullanici_oku(g_surec[s].ka, iov[i], t, o, iov[i + 1])) { don -EFAULT; }
+            o += iov[i + 1];
+            i += 2;
+        }
+        liste[sayi] bos_h;
+        don soket_gonder(s, fd, k, t, toplam, -1, bos_h, 0);
+    }
+    sayi r = soket_al(s, fd, k, t, toplam, 0);
+    haklari_birak(g_alim_hak);
+    g_alim_hak.temizle();
+    eger (r <= 0) { don r; }
+    sayi kalan = upp.min(r, toplam);
+    sayi o = 0;
+    i = 0;
+    iken (i < iov.uzunluk() && kalan > 0) {
+        sayi parca = upp.min(kalan, iov[i + 1]);
+        eger (parca > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, iov[i], t, o, parca)) { don -EFAULT; }
+        o += parca;
+        kalan -= parca;
+        i += 2;
+    }
+    don r;
+}
+
+// ---------------------------------------------------------------- seçenekler
+
+sabit sayi SO_REUSEADDR = 2;
+sabit sayi SO_TYPE = 3;
+sabit sayi SO_ERROR = 4;
+sabit sayi SO_SNDBUF = 7;
+sabit sayi SO_RCVBUF = 8;
+sabit sayi SO_KEEPALIVE = 9;
+sabit sayi SO_PASSCRED = 16;
+sabit sayi SO_PEERCRED = 17;
+sabit sayi SO_ACCEPTCONN = 30;
+sabit sayi SO_PROTOCOL = 38;
+sabit sayi SO_DOMAIN = 39;
+
+fonk sc_setsockopt(sayi s, sayi fd, sayi seviye, sayi ad, sayi deger_adr, sayi boy) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (seviye != SOL_SOCKET) { don -EOPNOTSUPP; }
+    eger (ad != SO_REUSEADDR && ad != SO_SNDBUF && ad != SO_RCVBUF && ad != SO_KEEPALIVE && ad != SO_PASSCRED) { don -ENOPROTOOPT; }
+    eger (boy < 4) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(4);
+    mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, deger_adr, t, 0, 4);
+    sayi v = isaretli32(upp.tampon.oku32(t, 0));
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    eger (ad == SO_REUSEADDR) { g_soket[k].reuseaddr = v != 0; }
+    eger (ad == SO_KEEPALIVE) { g_soket[k].keepalive = v != 0; }
+    eger (ad == SO_PASSCRED) { g_soket[k].passcred = v != 0; }
+    // Linux gibi: değer iki katına çıkar (wmem_max/rmem_max 212992, en az 4608 / 2304)
+    eger (ad == SO_SNDBUF) { g_soket[k].sndbuf = upp.max(upp.min(upp.max(v, 0), 212992) * 2, 4608); }
+    eger (ad == SO_RCVBUF) { g_soket[k].rcvbuf = upp.max(upp.min(upp.max(v, 0), 212992) * 2, 2304); }
+    don 0;
+}
+
+fonk sc_getsockopt(sayi s, sayi fd, sayi seviye, sayi ad, sayi deger_adr, sayi boy_adr) -> sayi {
+    sayi k = soket_fd(s, fd);
+    eger (k < 0) { don k; }
+    eger (seviye != SOL_SOCKET) { don -EOPNOTSUPP; }
+    sayi u = upp.tampon.yeni(4);
+    ertele upp.tampon.birak(u);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, boy_adr, u, 0, 4)) { don -EFAULT; }
+    sayi boy = isaretli32(upp.tampon.oku32(u, 0));
+    eger (boy < 0) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(12);
+    ertele upp.tampon.birak(t);
+    sayi n = 4;
+    eger (ad == SO_PEERCRED) {
+        // struct ucred { pid, uid, gid }
+        n = 12;
+        sayi es = g_soket[k].es_pid;
+        upp.tampon.yaz32(t, 0, es);
+        eger (es == 0) {
+            upp.tampon.yaz32(t, 4, 65534);
+            upp.tampon.yaz32(t, 8, 65534);
+        }
+    } yoksa {
+        sayi v = 0;
+        eger (ad == SO_TYPE) { v = g_soket[k].tur; }
+        yoksa eger (ad == SO_ERROR) { v = 0; }
+        yoksa eger (ad == SO_SNDBUF) { v = g_soket[k].sndbuf; }
+        yoksa eger (ad == SO_RCVBUF) { v = g_soket[k].rcvbuf; }
+        yoksa eger (ad == SO_REUSEADDR) { eger (g_soket[k].reuseaddr) { v = 1; } }
+        yoksa eger (ad == SO_KEEPALIVE) { eger (g_soket[k].keepalive) { v = 1; } }
+        yoksa eger (ad == SO_PASSCRED) { eger (g_soket[k].passcred) { v = 1; } }
+        yoksa eger (ad == SO_ACCEPTCONN) { eger (g_soket[k].hal == 1) { v = 1; } }
+        yoksa eger (ad == SO_DOMAIN) { v = AF_UNIX; }
+        yoksa eger (ad == SO_PROTOCOL) { v = 0; }
+        yoksa { don -ENOPROTOOPT; }
+        upp.tampon.yaz32(t, 0, v);
+    }
+    n = upp.min(n, boy);
+    eger (n > 0 && !upp.cekirdek.kullanici_yaz(g_surec[s].ka, deger_adr, t, 0, n)) { don -EFAULT; }
+    upp.tampon.yaz32(u, 0, n);
+    eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, boy_adr, u, 0, 4)) { don -EFAULT; }
+    don 0;
+}
+
+// FIONREAD: akışta tampondaki bayt, datagramda sıradaki iletinin boyu.
+fonk soket_okunabilir_bayt(sayi k) -> sayi {
+    eger (g_soket[k].hal == 1) { don -EINVAL; }
+    eger (g_soket[k].tur == SOCK_DGRAM) {
+        eger (g_soket[k].dg_veri.uzunluk() == 0) { don 0; }
+        don bayt_say(g_soket[k].dg_veri[0]);
+    }
+    don g_soket[k].dolu;
+}
+
+// poll durumu (Linux unix_poll / unix_dgram_poll).
+fonk soket_hazir(sayi k) -> sayi {
+    sayi m = 0;
+    mantik tamamen = g_soket[k].alma_kapali && g_soket[k].gonderme_kapali;
+    eger (tamamen) { m = m | POLLHUP; }
+    eger (g_soket[k].alma_kapali) { m = m | POLLRDHUP | POLLIN; }
+    eger (g_soket[k].tur == SOCK_DGRAM) {
+        eger (g_soket[k].dg_veri.uzunluk() > 0) { m = m | POLLIN; }
+        sayi es = g_soket[k].es;
+        mantik yazilir = !g_soket[k].gonderme_kapali;
+        eger (es >= 0 && g_soket[es].etkin && g_soket[es].dg_veri.uzunluk() >= DGRAM_KUYRUK) { yazilir = yanlis; }
+        eger (yazilir) { m = m | POLLOUT; }
+        don m;
+    }
+    eger (g_soket[k].hal == 1) {
+        eger (g_soket[k].bekleyen.uzunluk() > 0) { m = m | POLLIN; }
+        don m;
+    }
+    eger (g_soket[k].dolu > 0) { m = m | POLLIN; }
+    eger (g_soket[k].hal == 0) { m = m | POLLHUP; }
+    sayi es = g_soket[k].es;
+    mantik yazilir = dogru;
+    eger (es >= 0 && g_soket[es].etkin && g_soket[es].dolu >= SOKET_TAMPON) { yazilir = yanlis; }
+    eger (yazilir) { m = m | POLLOUT; }
+    don m;
+}
