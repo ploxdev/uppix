@@ -1,0 +1,638 @@
+// Uppix — aygıt ağacı ve sürücü çatısı (FreeBSD newbus tasarımı).
+// Her aygıt g_aygit listesinde bir sınıf değeridir; numarası listedeki yeridir. Kökte
+// nexus0 durur. Veri yolu sürücüleri (pci) çocuk aygıt ekler, çocukların değişkenlerine
+// (ivar) konumlarını ve kimliklerini yazar, sonra onlar için sürücüleri yoklar.
+// Sürücü kaydı DRIVER_MODULE karşılığıdır: ad, bağlandığı veri yolu (üst aygıtın sürücü
+// adı) ve yokla/bagla/ayir fonksiyon değerleri. yokla FreeBSD gibi öncelik döndürür:
+// <= 0 eşleşme (büyük olan kazanır), > 0 errno (ENXIO: bu aygıt benim değil).
+// Donanıma erişim çekirdeğin C mekanizmasıdır (pci_oku, mmio_*); burada yalnızca politika
+// vardır. guvensiz yalnızca PCI yapılandırma yazmada ve BAR penceresi açmada kullanılır.
+
+secenek AygitHali { YOK, BULUNDU, BAGLI }
+
+// yokla dönüşleri: ENXIO (errno, "böyle bir aygıt yok") ve FreeBSD BUS_PROBE_* öncelikleri.
+sabit sayi ENXIO = 6;
+sabit sayi YOKLA_OZEL = 0;
+sabit sayi YOKLA_SATICI = -10;
+sabit sayi YOKLA_VARSAYILAN = -20;
+sabit sayi YOKLA_GENEL = -100;
+
+sinif Aygit {
+    metin ad;
+    sayi birim;
+    mantik sabit_ad;
+    sayi ust;
+    liste[sayi] cocuklar;
+    sayi surucu;
+    AygitHali hal;
+    metin aciklama;
+    harita[metin, sayi] degisken;
+}
+
+// ad: "" ise adsızdır, bağlanan sürücünün adını alır; birim -1 = atanmadı.
+// sabit_ad: adı ekleyen verdi, yalnızca o addaki sürücüler yoklanır.
+// surucu: g_aygit_surucu içindeki bağlı sürücü (-1 = yok).
+
+sinif AygitSurucu {
+    metin ad;
+    metin veriyolu;
+    fonk(sayi) -> sayi yokla;
+    fonk(sayi) -> sayi bagla;
+    fonk(sayi) -> sayi ayir;
+    fonk(sayi) -> bos tani;
+    fonk(sayi) -> metin cocuk_konum;
+    fonk(sayi) -> metin cocuk_pnp;
+}
+
+// veriyolu: üst aygıtın sürücü adı ("" = kök). tani (DEVICE_IDENTIFY) veri yoluna kendi
+// çocuklarını ekler. cocuk_konum/cocuk_pnp yalnızca veri yolu sürücülerinde vardır:
+// çocuğun yeri ve kimliği (devinfo -v'de "at ..." ve "pnpinfo ...").
+
+liste[Aygit] g_aygit;
+liste[AygitSurucu] g_aygit_surucu;
+
+// DRIVER_MODULE(ad, veriyolu): sürücüyü kaydeder, numarasını döndürür.
+fonk surucu_kaydet(metin ad, metin veriyolu, fonk(sayi) -> sayi yokla, fonk(sayi) -> sayi bagla, fonk(sayi) -> sayi ayir) -> sayi {
+    AygitSurucu s;
+    s.ad = ad;
+    s.veriyolu = veriyolu;
+    s.yokla = yokla;
+    s.bagla = bagla;
+    s.ayir = ayir;
+    g_aygit_surucu.ekle(s);
+    don g_aygit_surucu.uzunluk() - 1;
+}
+
+fonk surucu_tanima_koy(sayi s, fonk(sayi) -> bos tani) -> bos {
+    g_aygit_surucu[s].tani = tani;
+}
+
+fonk surucu_cocuk_bilgisi(sayi s, fonk(sayi) -> metin konum, fonk(sayi) -> metin pnp) -> bos {
+    g_aygit_surucu[s].cocuk_konum = konum;
+    g_aygit_surucu[s].cocuk_pnp = pnp;
+}
+
+// devclass: verilen addaki ilk boş birim numarası.
+fonk birim_bul(metin ad) -> sayi {
+    sayi b = 0;
+    iken (dogru) {
+        mantik dolu = yanlis;
+        her (oto x in g_aygit) {
+            eger (x.ad == ad && x.birim == b) { dolu = dogru; }
+        }
+        eger (!dolu) { dur; }
+        b += 1;
+    }
+    don b;
+}
+
+// device_add_child: ad "" ise adsız çocuk, birim -1 ise ilk boş birim.
+fonk aygit_ekle(sayi ust, metin ad, sayi birim) -> sayi {
+    Aygit a;
+    a.ad = ad;
+    a.sabit_ad = ad != "";
+    a.birim = -1;
+    eger (ad != "") {
+        a.birim = birim;
+        eger (birim < 0) { a.birim = birim_bul(ad); }
+    }
+    a.ust = ust;
+    a.surucu = -1;
+    a.hal = AygitHali.YOK;
+    sayi no = g_aygit.uzunluk();
+    g_aygit.ekle(a);
+    eger (ust >= 0) { g_aygit[ust].cocuklar.ekle(no); }
+    don no;
+}
+
+// "pci0", "ata1"; adsız aygıt için "".
+fonk aygit_adi(sayi a) -> metin {
+    eger (g_aygit[a].ad == "" || g_aygit[a].birim < 0) { don g_aygit[a].ad; }
+    don g_aygit[a].ad + "{g_aygit[a].birim}";
+}
+
+fonk aygit_bul(metin ad) -> sayi {
+    dongu (sayi i = 0; i < g_aygit.uzunluk(); i += 1) {
+        eger (aygit_adi(i) == ad) { don i; }
+    }
+    don -1;
+}
+
+fonk aygit_bagli_mi(sayi a) -> mantik => g_aygit[a].hal == AygitHali.BAGLI;
+
+// Aygıtın bağlı olduğu veri yolunun sürücüsü (-1: kök ya da üst bağlı değil).
+fonk aygit_ust_surucusu(sayi a) -> sayi {
+    sayi u = g_aygit[a].ust;
+    eger (u < 0) { don -1; }
+    don g_aygit[u].surucu;
+}
+
+fonk aygit_ust_surucu_adi(sayi a) -> metin {
+    sayi s = aygit_ust_surucusu(a);
+    eger (s < 0) { don ""; }
+    don g_aygit_surucu[s].ad;
+}
+
+fonk aygit_aciklama_koy(sayi a, metin s) -> bos {
+    g_aygit[a].aciklama = s;
+}
+
+// ivar okuma/yazma: yalnızca veri yolu yazar, sürücüler okur.
+fonk aygit_degisken(sayi a, metin ad) -> sayi => g_aygit[a].degisken.al(ad);
+
+fonk aygit_degisken_var(sayi a, metin ad) -> mantik => g_aygit[a].degisken.var_mi(ad);
+
+fonk aygit_degisken_koy(sayi a, metin ad, sayi v) -> bos {
+    g_aygit[a].degisken.koy(ad, v);
+}
+
+// Veri yolu sürücüsünün verdiği konum ve kimlik metinleri ("" = yok).
+fonk aygit_konum(sayi a) -> metin {
+    sayi s = aygit_ust_surucusu(a);
+    eger (s < 0 || g_aygit_surucu[s].cocuk_konum == yok) { don ""; }
+    AygitSurucu k = g_aygit_surucu[s];
+    don k.cocuk_konum(a);
+}
+
+fonk aygit_pnp(sayi a) -> metin {
+    sayi s = aygit_ust_surucusu(a);
+    eger (s < 0 || g_aygit_surucu[s].cocuk_pnp == yok) { don ""; }
+    AygitSurucu k = g_aygit_surucu[s];
+    don k.cocuk_pnp(a);
+}
+
+fonk aygit_adsizlastir(sayi a) -> bos {
+    g_aygit[a].surucu = -1;
+    g_aygit[a].hal = AygitHali.YOK;
+    eger (!g_aygit[a].sabit_ad) {
+        g_aygit[a].ad = "";
+        g_aygit[a].birim = -1;
+    }
+}
+
+// device_probe_and_attach: üst veri yoluna kayıtlı sürücüleri yoklar, en yüksek
+// öncelikli olanı bağlar. Dönüş: 0 ya da errno.
+fonk aygit_yokla_bagla(sayi a) -> sayi {
+    eger (aygit_bagli_mi(a)) { don 0; }
+    metin vy = aygit_ust_surucu_adi(a);
+    eger (g_aygit[a].ust >= 0 && vy == "") { don ENXIO; }
+    sayi en_iyi = -1;
+    sayi en_oncelik = 0;
+    dongu (sayi s = 0; s < g_aygit_surucu.uzunluk(); s += 1) {
+        AygitSurucu k = g_aygit_surucu[s];
+        eger (k.veriyolu != vy) { devam; }
+        eger (g_aygit[a].sabit_ad && k.ad != g_aygit[a].ad) { devam; }
+        metin eski = g_aygit[a].aciklama;
+        sayi p = k.yokla(a);
+        // Kaybeden sürücünün koyduğu açıklama kalmasın; kazanan aşağıda yeniden yoklanır.
+        g_aygit[a].aciklama = eski;
+        eger (p > 0) { devam; }
+        eger (en_iyi < 0 || p > en_oncelik) {
+            en_iyi = s;
+            en_oncelik = p;
+        }
+    }
+    eger (en_iyi < 0) { don ENXIO; }
+    AygitSurucu k = g_aygit_surucu[en_iyi];
+    k.yokla(a);
+    eger (!g_aygit[a].sabit_ad) {
+        g_aygit[a].ad = k.ad;
+        g_aygit[a].birim = birim_bul(k.ad);
+    }
+    g_aygit[a].surucu = en_iyi;
+    g_aygit[a].hal = AygitHali.BULUNDU;
+    eger (g_aygit[a].ust >= 0) {
+        metin s = aygit_adi(a) + ":";
+        eger (g_aygit[a].aciklama != "") { s += " <" + g_aygit[a].aciklama + ">"; }
+        klog(s + " " + aygit_adi(g_aygit[a].ust) + " üzerinde");
+    }
+    sayi h = k.bagla(a);
+    eger (h != 0) {
+        klog(aygit_adi(a) + ": bağlanamadı (hata {h})");
+        aygit_adsizlastir(a);
+        don h;
+    }
+    g_aygit[a].hal = AygitHali.BAGLI;
+    don 0;
+}
+
+// bus_generic_attach: çocukları sırayla yoklayıp bağlar (bağlı olanlar atlanır).
+fonk veriyolu_cocuklari_bagla(sayi a) -> bos {
+    sayi i = 0;
+    iken (i < g_aygit[a].cocuklar.uzunluk()) {
+        aygit_yokla_bagla(g_aygit[a].cocuklar[i]);
+        i += 1;
+    }
+}
+
+// DEVICE_IDENTIFY: bu veri yoluna kayıtlı sürücüler kendi çocuklarını ekler.
+fonk veriyolu_tanit(sayi a) -> bos {
+    eger (g_aygit[a].surucu < 0) { don; }
+    metin vy = g_aygit_surucu[g_aygit[a].surucu].ad;
+    dongu (sayi s = 0; s < g_aygit_surucu.uzunluk(); s += 1) {
+        AygitSurucu k = g_aygit_surucu[s];
+        eger (k.veriyolu == vy && k.tani != yok) { k.tani(a); }
+    }
+}
+
+// device_detach: önce sürücünün ayir'ı (veri yolları çocuklarını ayırır), sonra aygıt
+// adsızlaşır. Dönüş: 0 ya da errno (aygıt bağlı kalır).
+fonk aygit_ayir(sayi a) -> sayi {
+    eger (!aygit_bagli_mi(a)) { don 0; }
+    AygitSurucu k = g_aygit_surucu[g_aygit[a].surucu];
+    sayi h = k.ayir(a);
+    eger (h != 0) { don h; }
+    klog_sessiz(aygit_adi(a) + ": ayrıldı");
+    aygit_adsizlastir(a);
+    g_aygit[a].aciklama = "";
+    don 0;
+}
+
+// bus_generic_detach: çocukları sondan başa ayırır.
+fonk veriyolu_genel_ayir(sayi a) -> sayi {
+    sayi i = g_aygit[a].cocuklar.uzunluk() - 1;
+    iken (i >= 0) {
+        sayi h = aygit_ayir(g_aygit[a].cocuklar[i]);
+        eger (h != 0) { don h; }
+        i -= 1;
+    }
+    don 0;
+}
+
+// ---------------------------------------------------------------- nexus (kök)
+
+fonk nexus_yokla(sayi a) -> sayi {
+    aygit_aciklama_koy(a, "kök veri yolu");
+    don YOKLA_OZEL;
+}
+
+fonk nexus_bagla(sayi a) -> sayi {
+    aygit_ekle(a, "pci", -1);
+    veriyolu_cocuklari_bagla(a);
+    // Eski aygıtlar PCI'dan sonra tanıtılır: karşılıkları PCI'da bağlandıysa eklenmezler.
+    veriyolu_tanit(a);
+    veriyolu_cocuklari_bagla(a);
+    don 0;
+}
+
+// ---------------------------------------------------------------- PCI veri yolu
+
+sabit sayi BAR_BELLEK = 1;
+sabit sayi BAR_GC = 2;
+sabit sayi PCI_KOMUT_GC = 1;
+sabit sayi PCI_KOMUT_BELLEK = 2;
+sabit sayi PCI_KOMUT_YONETICI = 4;
+
+// PCI çocuğunun değişkenleri: bus, yuva, islev, satici, aygit, sinif, altsinif, progif,
+// rev, baslik, alt_satici, alt_aygit, kesme; her BAR için barN (taban), barN_boy,
+// barN_tur (BAR_BELLEK / BAR_GC), barN_64 (64 bit), barN_on (önceden getirilebilir).
+
+fonk pci_yap_oku(sayi a, sayi ofs) -> sayi {
+    don upp.cekirdek.pci_oku(aygit_degisken(a, "bus"), aygit_degisken(a, "yuva"), aygit_degisken(a, "islev"), ofs) & 0xFFFFFFFF;
+}
+
+fonk pci_yap_oku16(sayi a, sayi ofs) -> sayi {
+    sayi v = pci_yap_oku(a, ofs);
+    eger (ofs % 4 >= 2) { v = v / 65536; }
+    don v & 0xFFFF;
+}
+
+fonk pci_yap_oku8(sayi a, sayi ofs) -> sayi {
+    sayi v = pci_yap_oku(a, ofs);
+    dongu (sayi i = 0; i < ofs % 4; i += 1) { v = v / 256; }
+    don v & 0xFF;
+}
+
+fonk pci_yap_yaz(sayi a, sayi ofs, sayi v) -> bos {
+    sayi b = aygit_degisken(a, "bus");
+    sayi y = aygit_degisken(a, "yuva");
+    sayi f = aygit_degisken(a, "islev");
+    guvensiz {
+        upp.cekirdek.pci_yaz(b, y, f, ofs, v);
+    }
+}
+
+// Komut yazmacında bitleri açar. Dword'ün üst yarısı durum yazmacıdır: bitleri 1 yazınca
+// silinir, bu yüzden üst yarıya 0 yazılır.
+fonk pci_komut_ac(sayi a, sayi bitler) -> bos {
+    pci_yap_yaz(a, 4, pci_yap_oku16(a, 4) | bitler);
+}
+
+fonk pci_bellek_alani_ac(sayi a) -> bos => pci_komut_ac(a, PCI_KOMUT_BELLEK);
+
+// pci_enable_busmaster: aygıt DMA ile belleğe kendisi erişebilir.
+fonk pci_yonetici_ac(sayi a) -> bos => pci_komut_ac(a, PCI_KOMUT_YONETICI);
+
+// BAR'ın boyutu, tümü-1 yazıp geri okunan maskeden çıkar. Ölçülürken BAR'ın çözümlemesi
+// (G/Ç ya da bellek) kapatılır, sonra yazmaçlar eski değerlerine döner.
+fonk pci_bar_olc(sayi a, sayi ofs, mantik gc) -> sayi {
+    sayi komut = pci_yap_oku16(a, 4);
+    sayi kapat = PCI_KOMUT_BELLEK;
+    eger (gc) { kapat = PCI_KOMUT_GC; }
+    pci_yap_yaz(a, 4, komut & (0xFFFF - kapat));
+    sayi eski = pci_yap_oku(a, ofs);
+    pci_yap_yaz(a, ofs, 0xFFFFFFFF);
+    sayi maske = pci_yap_oku(a, ofs);
+    pci_yap_yaz(a, ofs, eski);
+    pci_yap_yaz(a, 4, komut);
+    don maske;
+}
+
+fonk pci_barlari_oku(sayi a) -> bos {
+    sayi adet = 0;
+    eger (aygit_degisken(a, "baslik") == 0) { adet = 6; }
+    eger (aygit_degisken(a, "baslik") == 1) { adet = 2; }
+    // Köprülerin çözümlemesi kapatılmaz: ISA köprüsü eski portları (seri, PIC) da taşır.
+    eger (aygit_degisken(a, "sinif") == 6) { adet = 0; }
+    sayi i = 0;
+    iken (i < adet) {
+        sayi ofs = 0x10 + i * 4;
+        metin k = "bar{i}";
+        sayi eski = pci_yap_oku(a, ofs);
+        mantik gc = (eski & 1) == 1;
+        sayi maske = pci_bar_olc(a, ofs, gc);
+        eger (maske == 0) {
+            i += 1;
+            devam;
+        }
+        eger (gc) {
+            // G/Ç BAR'ı en çok 64 KiB'dir; üst 16 biti okunmayabilir.
+            aygit_degisken_koy(a, k, eski & 0xFFFFFFFC);
+            aygit_degisken_koy(a, k + "_boy", 0x100000000 - ((maske & 0xFFFFFFFC) | 0xFFFF0000));
+            aygit_degisken_koy(a, k + "_tur", BAR_GC);
+            i += 1;
+            devam;
+        }
+        sayi taban = eski & 0xFFFFFFF0;
+        sayi boy = 0x100000000 - (maske & 0xFFFFFFF0);
+        mantik genis = ((eski / 2) & 3) == 2 && i + 1 < adet;
+        eger (genis) {
+            sayi ust = pci_yap_oku(a, ofs + 4);
+            sayi ust_maske = pci_bar_olc(a, ofs + 4, yanlis);
+            taban += ust * 0x100000000;
+            boy += (0xFFFFFFFF - ust_maske) * 0x100000000;
+            aygit_degisken_koy(a, k + "_64", 1);
+        }
+        aygit_degisken_koy(a, k, taban);
+        aygit_degisken_koy(a, k + "_boy", boy);
+        aygit_degisken_koy(a, k + "_tur", BAR_BELLEK);
+        eger ((eski & 8) != 0) { aygit_degisken_koy(a, k + "_on", 1); }
+        i += 1;
+        eger (genis) { i += 1; }
+    }
+}
+
+fonk pci_cocuk_ekle(sayi pci, sayi b, sayi y, sayi f) -> sayi {
+    sayi a = aygit_ekle(pci, "", -1);
+    aygit_degisken_koy(a, "bus", b);
+    aygit_degisken_koy(a, "yuva", y);
+    aygit_degisken_koy(a, "islev", f);
+    sayi kimlik = pci_yap_oku(a, 0);
+    aygit_degisken_koy(a, "satici", kimlik & 0xFFFF);
+    aygit_degisken_koy(a, "aygit", (kimlik / 65536) & 0xFFFF);
+    sayi sn = pci_yap_oku(a, 8);
+    aygit_degisken_koy(a, "rev", sn & 0xFF);
+    aygit_degisken_koy(a, "progif", (sn / 256) & 0xFF);
+    aygit_degisken_koy(a, "altsinif", (sn / 65536) & 0xFF);
+    aygit_degisken_koy(a, "sinif", (sn / 16777216) & 0xFF);
+    sayi baslik = pci_yap_oku8(a, 0x0E) & 0x7F;
+    aygit_degisken_koy(a, "baslik", baslik);
+    eger (baslik == 0) {
+        sayi alt = pci_yap_oku(a, 0x2C);
+        aygit_degisken_koy(a, "alt_satici", alt & 0xFFFF);
+        aygit_degisken_koy(a, "alt_aygit", (alt / 65536) & 0xFFFF);
+    }
+    aygit_degisken_koy(a, "kesme", pci_yap_oku8(a, 0x3C));
+    pci_barlari_oku(a);
+    don a;
+}
+
+// Bütün veri yolları (0..255), yuvalar ve çok işlevli aygıtların işlevleri taranır.
+fonk pci_tara(sayi pci) -> bos {
+    dongu (sayi b = 0; b < 256; b += 1) {
+        dongu (sayi y = 0; y < 32; y += 1) {
+            eger ((upp.cekirdek.pci_oku(b, y, 0, 0) & 0xFFFF) == 0xFFFF) { devam; }
+            sayi islev_say = 1;
+            // Başlık türünün 7. biti (dword 0x0C'nin 23. biti): çok işlevli aygıt.
+            eger ((upp.cekirdek.pci_oku(b, y, 0, 0x0C) & 0x800000) != 0) { islev_say = 8; }
+            dongu (sayi f = 0; f < islev_say; f += 1) {
+                eger ((upp.cekirdek.pci_oku(b, y, f, 0) & 0xFFFF) == 0xFFFF) { devam; }
+                pci_cocuk_ekle(pci, b, y, f);
+            }
+        }
+    }
+}
+
+fonk pci_yokla(sayi a) -> sayi {
+    // Yapılandırma alanı yoksa ana köprü (0:0.0) bile 0xFFFF okunur.
+    eger ((upp.cekirdek.pci_oku(0, 0, 0, 0) & 0xFFFF) == 0xFFFF) { don ENXIO; }
+    aygit_aciklama_koy(a, "PCI veri yolu");
+    don YOKLA_GENEL;
+}
+
+fonk pci_bagla(sayi a) -> sayi {
+    pci_tara(a);
+    veriyolu_cocuklari_bagla(a);
+    her (oto c in g_aygit[a].cocuklar) {
+        eger (aygit_bagli_mi(c)) { devam; }
+        metin tur = pci_sinif_adi(aygit_degisken(c, "sinif"));
+        metin alt = pci_altsinif_adi(aygit_degisken(c, "sinif"), aygit_degisken(c, "altsinif"));
+        eger (alt != "") { tur += ", " + alt; }
+        klog_sessiz(aygit_adi(a) + ": <" + tur + "> aygıt {aygit_degisken(c, \"yuva\")}.{aygit_degisken(c, \"islev\")} (sürücü bağlanmadı)");
+    }
+    don 0;
+}
+
+fonk pci_cocuk_konum(sayi c) -> metin {
+    sayi y = aygit_degisken(c, "yuva");
+    sayi f = aygit_degisken(c, "islev");
+    don "slot={y} function={f} dbsf=pci0:{aygit_degisken(c, \"bus\")}:{y}:{f}";
+}
+
+fonk pci_cocuk_pnp(sayi c) -> metin {
+    metin s = "vendor=0x" + onaltilik_dolgu(aygit_degisken(c, "satici"), 4);
+    s += " device=0x" + onaltilik_dolgu(aygit_degisken(c, "aygit"), 4);
+    s += " subvendor=0x" + onaltilik_dolgu(aygit_degisken(c, "alt_satici"), 4);
+    s += " subdevice=0x" + onaltilik_dolgu(aygit_degisken(c, "alt_aygit"), 4);
+    don s + " class=0x" + onaltilik_dolgu(pci_sinif_kodu(c), 6);
+}
+
+// sınıf, alt sınıf ve progif tek sayıda: 0x010180.
+fonk pci_sinif_kodu(sayi c) -> sayi {
+    don aygit_degisken(c, "sinif") * 65536 + aygit_degisken(c, "altsinif") * 256 + aygit_degisken(c, "progif");
+}
+
+fonk pci_sinif_adi(sayi s) -> metin {
+    secim (s) {
+        durum 0x00: don "eski";
+        durum 0x01: don "yığın depolama";
+        durum 0x02: don "ağ";
+        durum 0x03: don "ekran";
+        durum 0x04: don "çoklu ortam";
+        durum 0x05: don "bellek";
+        durum 0x06: don "köprü";
+        durum 0x07: don "basit iletişim";
+        durum 0x08: don "temel çevre birimi";
+        durum 0x09: don "girdi aygıtı";
+        durum 0x0A: don "yerleştirme istasyonu";
+        durum 0x0B: don "işlemci";
+        durum 0x0C: don "seri veri yolu";
+        durum 0x0D: don "kablosuz";
+        durum 0x0E: don "akıllı G/Ç";
+        durum 0x0F: don "uydu iletişimi";
+        durum 0x10: don "şifreleme";
+        durum 0x11: don "veri toplama";
+    }
+    don "";
+}
+
+fonk pci_altsinif_adi(sayi s, sayi a) -> metin {
+    secim (s * 256 + a) {
+        durum 0x0100: don "SCSI";
+        durum 0x0101: don "ATA";
+        durum 0x0102: don "disket";
+        durum 0x0104: don "RAID";
+        durum 0x0105: don "ATA (ADMA)";
+        durum 0x0106: don "SATA";
+        durum 0x0107: don "SAS";
+        durum 0x0108: don "NVM";
+        durum 0x0200: don "ethernet";
+        durum 0x0300: don "VGA";
+        durum 0x0302: don "3B";
+        durum 0x0401: don "ses";
+        durum 0x0403: don "HDA";
+        durum 0x0600: don "HOST-PCI";
+        durum 0x0601: don "PCI-ISA";
+        durum 0x0604: don "PCI-PCI";
+        durum 0x0680: don "diğer";
+        durum 0x0700: don "UART";
+        durum 0x0C03: don "USB";
+        durum 0x0C05: don "SMBus";
+    }
+    don "";
+}
+
+// pciconf -v için küçük bir satıcı/aygıt adı tablosu (pci.ids'den).
+fonk pci_satici_adi(sayi v) -> metin {
+    secim (v) {
+        durum 0x8086: don "Intel Corporation";
+        durum 0x1022: don "Advanced Micro Devices, Inc. [AMD]";
+        durum 0x10DE: don "NVIDIA Corporation";
+        durum 0x10EC: don "Realtek Semiconductor Co., Ltd.";
+        durum 0x15AD: don "VMware";
+        durum 0x1AF4: don "Red Hat, Inc.";
+        durum 0x1B36: don "Red Hat, Inc.";
+        durum 0x80EE: don "InnoTek Systemberatung GmbH";
+    }
+    don "";
+}
+
+fonk pci_aygit_adi(sayi v, sayi d) -> metin {
+    secim (v * 65536 + d) {
+        durum 0x80861237: don "440FX - 82441FX PMC [Natoma]";
+        durum 0x80867000: don "82371SB PIIX3 ISA [Natoma/Triton II]";
+        durum 0x80867010: don "82371SB PIIX3 IDE [Natoma/Triton II]";
+        durum 0x80867113: don "82371AB/EB/MB PIIX4 ACPI";
+        durum 0x8086100E: don "82540EM Gigabit Ethernet Controller";
+        durum 0x808629C0: don "82G33/G31/P35/P31 Express DRAM Controller";
+        durum 0x80862918: don "82801IB (ICH9) LPC Interface Controller";
+        durum 0x80862922: don "82801IR/IO/IH (ICH9R/DO/DH) 6 port SATA Controller [AHCI mode]";
+        durum 0x80862930: don "82801I (ICH9 Family) SMBus Controller";
+        durum 0x1AF41000: don "Virtio network device";
+        durum 0x1AF41001: don "Virtio block device";
+    }
+    don "";
+}
+
+// ---------------------------------------------------------------- PCI köprüleri
+
+fonk hostb_yokla(sayi a) -> sayi {
+    eger (aygit_degisken(a, "sinif") != 6 || aygit_degisken(a, "altsinif") != 0) { don ENXIO; }
+    aygit_aciklama_koy(a, "Ana köprü (HOST-PCI)");
+    don YOKLA_GENEL;
+}
+
+fonk isab_yokla(sayi a) -> sayi {
+    eger (aygit_degisken(a, "sinif") != 6 || aygit_degisken(a, "altsinif") != 1) { don ENXIO; }
+    aygit_aciklama_koy(a, "PCI-ISA köprüsü");
+    don YOKLA_GENEL;
+}
+
+fonk kopru_bagla(sayi a) -> sayi => 0;
+
+fonk kopru_ayir(sayi a) -> sayi => 0;
+
+// ---------------------------------------------------------------- kaynaklar (bus_space, bus_dma)
+
+// bus_alloc_resource(SYS_RES_MEMORY): BAR'ın bellek penceresini açar, bellek alanını
+// komut yazmacında etkinleştirir. Dönüş: upp.cekirdek.mmio_oku*/mmio_yaz* tutamacı
+// (bus_space; sınır ve hiza denetimli), 0 = BAR bellek değil ya da açılamadı (Multiboot'ta
+// yalnızca ilk 1 GiB açılabilir; PCI BAR'ları genellikle 4 GiB'ın hemen altındadır).
+fonk pci_bellek_ayir(sayi a, sayi bar) -> sayi {
+    metin k = "bar{bar}";
+    eger (aygit_degisken(a, k + "_tur") != BAR_BELLEK) { don 0; }
+    sayi taban = aygit_degisken(a, k);
+    sayi boy = aygit_degisken(a, k + "_boy");
+    eger (taban == 0 || boy <= 0) { don 0; }
+    pci_bellek_alani_ac(a);
+    sayi h = 0;
+    guvensiz {
+        h = upp.cekirdek.mmio_ac(taban, boy);
+    }
+    don h;
+}
+
+// bus_dmamem_alloc: aygıtın doğrudan erişeceği bellek. Çekirdek yığını fiziksel olarak tek
+// bitişik bölgedir, yani bir tamponun tamamı bitişiktir; hiza için fazladan ayrılır.
+// Sürücü veriyi tampon + ofs'tan yazar/okur, aygıta fiziksel adresi verir.
+sinif DmaTampon {
+    sayi tampon;
+    sayi ofs;
+    sayi fiziksel;
+    sayi boy;
+}
+
+fonk dma_ayir(sayi boy, sayi hiza) -> DmaTampon {
+    DmaTampon d;
+    sayi h = upp.max(hiza, 1);
+    d.boy = boy;
+    d.tampon = upp.tampon.yeni(boy + h);
+    sayi fiz = upp.cekirdek.tampon_fiziksel(d.tampon, 0);
+    d.fiziksel = -1;
+    eger (fiz >= 0) {
+        d.ofs = (h - fiz % h) % h;
+        d.fiziksel = fiz + d.ofs;
+    }
+    don d;
+}
+
+fonk dma_birak(DmaTampon d) -> bos {
+    upp.tampon.birak(d.tampon);
+}
+
+// bus_dmamap_load: tampondaki ofs baytının fiziksel adresi (-1: bilinmiyor ya da dışarıda).
+fonk dma_fiziksel(DmaTampon d, sayi ofs) -> sayi {
+    eger (d.fiziksel < 0 || ofs < 0 || ofs >= d.boy) { don -1; }
+    don d.fiziksel + ofs;
+}
+
+// ---------------------------------------------------------------- kurulum
+
+fonk veriyolu_kaydet() -> bos {
+    surucu_kaydet("nexus", "", nexus_yokla, nexus_bagla, veriyolu_genel_ayir);
+    sayi pci = surucu_kaydet("pci", "nexus", pci_yokla, pci_bagla, veriyolu_genel_ayir);
+    surucu_cocuk_bilgisi(pci, pci_cocuk_konum, pci_cocuk_pnp);
+    surucu_kaydet("hostb", "pci", hostb_yokla, kopru_bagla, kopru_ayir);
+    surucu_kaydet("isab", "pci", isab_yokla, kopru_bagla, kopru_ayir);
+}
+
+// Kök aygıtı (nexus0) oluşturur; bütün ağaç yoklanır ve bağlanır. Sürücüler önce
+// kaydedilmiş olmalıdır (veriyolu_kaydet, ata_kaydet).
+fonk veriyolu_kur() -> bos {
+    aygit_yokla_bagla(aygit_ekle(-1, "nexus", 0));
+    sayi bagli = 0;
+    her (oto x in g_aygit) {
+        eger (x.hal == AygitHali.BAGLI) { bagli += 1; }
+    }
+    klog("aygıtlar: {g_aygit.uzunluk()} aygıt, {bagli} tanesine sürücü bağlı");
+}

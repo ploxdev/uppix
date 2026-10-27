@@ -5,7 +5,9 @@
 kullan "yardimci.upp";
 kullan "cikti.upp";
 kullan "vfs.upp";
+kullan "veriyolu.upp";
 kullan "blok.upp";
+kullan "ata.upp";
 kullan "ext4.upp";
 kullan "fat.upp";
 kullan "exfat.upp";
@@ -15,6 +17,7 @@ kullan "komut_dosya.upp";
 kullan "komut_metin.upp";
 kullan "komut_sistem.upp";
 kullan "komut_disk.upp";
+kullan "komut_aygit.upp";
 kullan "komut_oyun.upp";
 kullan "komut_hexdump.upp";
 kullan "duzenleyici.upp";
@@ -57,6 +60,7 @@ fonk komutlari_kur() -> bos {
     komut_ekle("cp", k_cp, "kopyala (-r)");
     komut_ekle("cut", k_cut, "alan/karakter kes (-d -f -c)");
     komut_ekle("date", k_date, "tarih ve saat");
+    komut_ekle("devinfo", k_devinfo, "aygıt ağacı (-v)");
     komut_ekle("df", k_df, "dosya sistemi doluluğu (-h)");
     komut_ekle("dirname", k_dirname, "yolun dizin kısmı");
     komut_ekle("dmesg", k_dmesg, "çekirdek günlüğü");
@@ -87,6 +91,7 @@ fonk komutlari_kur() -> bos {
     komut_ekle("mv", k_mv, "taşı / yeniden adlandır");
     komut_ekle("nano", k_nano, "metin düzenleyici (^O yaz, ^X çık, ^G yardım)");
     komut_ekle("nproc", k_nproc, "işlemci sayısı");
+    komut_ekle("pciconf", k_pciconf, "PCI aygıtları (-l, -lv, -lb)");
     komut_ekle("poweroff", k_poweroff, "makineyi kapat");
     komut_ekle("halt", k_poweroff, "makineyi kapat");
     komut_ekle("shutdown", k_poweroff, "makineyi kapat");
@@ -197,7 +202,7 @@ fonk diskleri_kur() -> mantik {
     blok_tara();
     her (oto b in g_blok) {
         metin tanim = "/dev/" + b.ad + ": " + boyut_insan(b.sektor * 512);
-        eger (b.bolum == 0) { tanim += " " + upp.cekirdek.disk_model(b.disk); }
+        eger (b.bolum == 0) { tanim += " " + g_disk[b.disk].model; }
         eger (b.fs != "") { tanim += ", " + b.fs; }
         eger (b.etiket != "") { tanim += " \"" + b.etiket + "\""; }
         klog("blok: " + tanim);
@@ -279,6 +284,9 @@ fonk uppix_baslat() -> bos {
     ext4_kaydet();
     fat_kaydet();
     exfat_kaydet();
+    veriyolu_kaydet();
+    ata_kaydet();
+    veriyolu_kur();
     fs_kok_kur();
     mantik disk_kok = diskleri_kur();
     fs_sanal_kur();

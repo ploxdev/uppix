@@ -140,6 +140,18 @@ fonk sifir_doldur(sayi v, sayi w) -> metin {
     don upp.metin.tekrar("0", w - uz(s)) + s;
 }
 
+// Öneksiz, küçük harfli, w haneye sıfırla doldurulmuş onaltılık: (0x7010, 4) → "7010".
+fonk onaltilik_dolgu(sayi v, sayi w) -> metin {
+    metin h = "0123456789abcdef";
+    metin s = "";
+    sayi x = v;
+    iken (x > 0 || uz(s) < w) {
+        s = kes(h, x % 16, 1) + s;
+        x = x / 16;
+    }
+    don s;
+}
+
 fonk boyut_insan(sayi b) -> metin {
     eger (b < 1024) { don "{b}"; }
     eger (b < 1048576) {

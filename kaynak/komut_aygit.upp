@@ -1,0 +1,125 @@
+// Uppix — aygıt ağacı komutları: devinfo, pciconf (FreeBSD çıktı biçimiyle).
+
+// FreeBSD devinfo gibi: gösterilmeyen (bağlı olmayan) aygıtın çocukları aynı girintide kalır.
+fonk devinfo_yaz(sayi a, sayi girinti, mantik hepsi) -> bos {
+    sayi alt = girinti;
+    eger (hepsi || aygit_bagli_mi(a)) {
+        metin ad = aygit_adi(a);
+        eger (ad == "") { ad = "adsız"; }
+        metin s = upp.metin.tekrar(" ", girinti) + ad;
+        eger (hepsi) {
+            metin pnp = aygit_pnp(a);
+            metin konum = aygit_konum(a);
+            eger (pnp != "") { s += " pnpinfo " + pnp; }
+            eger (konum != "") { s += " at " + konum; }
+        }
+        satir(s);
+        alt = girinti + 2;
+    }
+    her (oto c in g_aygit[a].cocuklar) { devinfo_yaz(c, alt, hepsi); }
+}
+
+// devinfo [-v]: aygıt ağacı; -v bağlı olmayanları, kimlik ve konumları da gösterir.
+fonk k_devinfo(liste[metin] a, metin girdi) -> sayi {
+    mantik hepsi = yanlis;
+    dongu (sayi i = 1; i < a.uzunluk(); i += 1) {
+        eger (a[i] == "-v") {
+            hepsi = dogru;
+        } yoksa {
+            hata_bildir("devinfo: geçersiz seçenek: " + a[i]);
+            hata_bildir("kullanım: devinfo [-v]");
+            don 1;
+        }
+    }
+    eger (g_aygit.uzunluk() == 0) {
+        hata_bildir("devinfo: aygıt ağacı boş");
+        don 1;
+    }
+    devinfo_yaz(0, 0, hepsi);
+    don 0;
+}
+
+fonk pciconf_barlar(sayi c) -> bos {
+    sayi komut = pci_yap_oku16(c, 4);
+    dongu (sayi i = 0; i < 6; i += 1) {
+        metin k = "bar{i}";
+        eger (!aygit_degisken_var(c, k)) { devam; }
+        metin tur = "G/Ç portu";
+        mantik etkin = (komut & PCI_KOMUT_GC) != 0;
+        eger (aygit_degisken(c, k + "_tur") == BAR_BELLEK) {
+            tur = "bellek";
+            eger (aygit_degisken_var(c, k + "_on")) { tur = "önceden getirilebilir bellek"; }
+            etkin = (komut & PCI_KOMUT_BELLEK) != 0;
+        }
+        sayi aralik = 32;
+        eger (aygit_degisken_var(c, k + "_64")) { aralik = 64; }
+        metin s = "    bar   [" + onaltilik_dolgu(0x10 + i * 4, 2) + "] = tür " + tur + ", aralık {aralik}";
+        s += ", taban 0x" + onaltilik_dolgu(aygit_degisken(c, k), 1) + ", boyut {aygit_degisken(c, k + \"_boy\")}";
+        eger (etkin) { s += ", etkin"; } yoksa { s += ", kapalı"; }
+        satir(s);
+    }
+}
+
+fonk pciconf_ayrinti(sayi c) -> bos {
+    sayi sat = aygit_degisken(c, "satici");
+    metin v = pci_satici_adi(sat);
+    metin d = pci_aygit_adi(sat, aygit_degisken(c, "aygit"));
+    metin s = pci_sinif_adi(aygit_degisken(c, "sinif"));
+    metin alt = pci_altsinif_adi(aygit_degisken(c, "sinif"), aygit_degisken(c, "altsinif"));
+    eger (v != "") { satir("    vendor     = '" + v + "'"); }
+    eger (d != "") { satir("    device     = '" + d + "'"); }
+    eger (s != "") { satir("    class      = " + s); }
+    eger (alt != "") { satir("    subclass   = " + alt); }
+}
+
+// pciconf -l [-bv]: PCI aygıtları; sürücüsü olmayanlar none0, none1... adını alır.
+fonk k_pciconf(liste[metin] a, metin girdi) -> sayi {
+    mantik liste_kip = yanlis;
+    mantik ayrinti = yanlis;
+    mantik barlar = yanlis;
+    dongu (sayi i = 1; i < a.uzunluk(); i += 1) {
+        metin s = a[i];
+        mantik gecerli = uz(s) > 1 && s[0] == '-';
+        dongu (sayi j = 1; j < uz(s) && gecerli; j += 1) {
+            eger (s[j] == 'l') {
+                liste_kip = dogru;
+            } yoksa eger (s[j] == 'v') {
+                ayrinti = dogru;
+            } yoksa eger (s[j] == 'b') {
+                barlar = dogru;
+            } yoksa {
+                gecerli = yanlis;
+            }
+        }
+        eger (!gecerli) {
+            hata_bildir("pciconf: geçersiz seçenek: " + s);
+            liste_kip = yanlis;
+            dur;
+        }
+    }
+    eger (!liste_kip) {
+        hata_bildir("kullanım: pciconf -l [-bv]");
+        don 1;
+    }
+    sayi yok_no = 0;
+    dongu (sayi c = 0; c < g_aygit.uzunluk(); c += 1) {
+        eger (aygit_ust_surucu_adi(c) != "pci") { devam; }
+        metin ad = aygit_adi(c);
+        eger (!aygit_bagli_mi(c)) {
+            ad = "none{yok_no}";
+            yok_no += 1;
+        }
+        metin s = ad + "@pci0:{aygit_degisken(c, \"bus\")}:{aygit_degisken(c, \"yuva\")}:{aygit_degisken(c, \"islev\")}:\t";
+        s += "class=0x" + onaltilik_dolgu(pci_sinif_kodu(c), 6);
+        s += " rev=0x" + onaltilik_dolgu(aygit_degisken(c, "rev"), 2);
+        s += " hdr=0x" + onaltilik_dolgu(aygit_degisken(c, "baslik"), 2);
+        s += " vendor=0x" + onaltilik_dolgu(aygit_degisken(c, "satici"), 4);
+        s += " device=0x" + onaltilik_dolgu(aygit_degisken(c, "aygit"), 4);
+        s += " subvendor=0x" + onaltilik_dolgu(aygit_degisken(c, "alt_satici"), 4);
+        s += " subdevice=0x" + onaltilik_dolgu(aygit_degisken(c, "alt_aygit"), 4);
+        satir(s);
+        eger (ayrinti) { pciconf_ayrinti(c); }
+        eger (barlar) { pciconf_barlar(c); }
+    }
+    don 0;
+}

@@ -1,0 +1,89 @@
+// Uppix — ATA sürücüleri: PCI IDE denetleyicisi (atapci) ve kanalları (ata).
+// atapci uyumluluk kipindeki her kanal için bir ata çocuğu ekler; ata kanalındaki
+// diskleri disk kaydına koyar. Sektör aktarımı çekirdeğin ATA PIO mekanizmasıdır
+// (upp.cekirdek.disk_*: birincil kanal 0x1F0, ikincil 0x170; sürücü = kanal * 2 + i).
+// PCI'da IDE denetleyicisi bağlanmadıysa kanallar kökte (nexus) eski ISA aygıtları olarak
+// tanıtılır.
+
+fonk atapci_aciklama(sayi satici, sayi aygit) -> metin {
+    secim (satici * 65536 + aygit) {
+        durum 0x80867010: don "Intel PIIX3 WDMA2 denetleyicisi";
+        durum 0x80867111: don "Intel PIIX4 UDMA33 denetleyicisi";
+    }
+    don "";
+}
+
+fonk atapci_yokla(sayi a) -> sayi {
+    eger (aygit_degisken(a, "sinif") != 1 || aygit_degisken(a, "altsinif") != 1) { don ENXIO; }
+    metin ac = atapci_aciklama(aygit_degisken(a, "satici"), aygit_degisken(a, "aygit"));
+    eger (ac == "") {
+        aygit_aciklama_koy(a, "Genel PCI ATA denetleyicisi");
+        don YOKLA_GENEL;
+    }
+    aygit_aciklama_koy(a, ac);
+    don YOKLA_VARSAYILAN;
+}
+
+fonk atapci_bagla(sayi a) -> sayi {
+    sayi progif = aygit_degisken(a, "progif");
+    dongu (sayi k = 0; k < 2; k += 1) {
+        // progif'in 0. (birincil) ve 2. (ikincil) biti: kanal yerel kipte, portları BAR'da.
+        // PIO mekanizması yalnızca uyumluluk kipindeki sabit portları sürer.
+        sayi bit = 1;
+        eger (k == 1) { bit = 4; }
+        eger ((progif & bit) != 0) {
+            klog_sessiz(aygit_adi(a) + ": kanal {k} yerel kipte, atlandı");
+            devam;
+        }
+        sayi c = aygit_ekle(a, "ata", -1);
+        aygit_degisken_koy(c, "kanal", k);
+    }
+    veriyolu_cocuklari_bagla(a);
+    don 0;
+}
+
+fonk ata_yokla(sayi a) -> sayi {
+    eger (!aygit_degisken_var(a, "kanal")) { don ENXIO; }
+    eger (aygit_degisken(a, "kanal") == 0) {
+        aygit_aciklama_koy(a, "ATA birincil kanal");
+    } yoksa {
+        aygit_aciklama_koy(a, "ATA ikincil kanal");
+    }
+    don YOKLA_VARSAYILAN;
+}
+
+fonk ata_disk_oku(sayi d, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik => upp.cekirdek.disk_oku(d, lba, adet, t, ofs);
+
+fonk ata_disk_yaz(sayi d, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik => upp.cekirdek.disk_yaz(d, lba, adet, t, ofs);
+
+fonk ata_bagla(sayi a) -> sayi {
+    sayi k = aygit_degisken(a, "kanal");
+    dongu (sayi i = 0; i < 2; i += 1) {
+        sayi d = k * 2 + i;
+        eger (!upp.cekirdek.disk_var(d)) { devam; }
+        disk_kaydet(a, d, upp.cekirdek.disk_model(d), upp.cekirdek.disk_sektor(d), ata_disk_oku, ata_disk_yaz);
+    }
+    don 0;
+}
+
+fonk ata_ayir(sayi a) -> sayi {
+    disk_sil(a);
+    don 0;
+}
+
+// Kökte tanıma: PCI IDE denetleyicisi kanalları bağlamadıysa eski ISA kanallarını ekler.
+fonk ata_tani(sayi ust) -> bos {
+    her (oto x in g_aygit) {
+        eger (x.ad == "ata" && x.hal == AygitHali.BAGLI) { don; }
+    }
+    dongu (sayi k = 0; k < 2; k += 1) {
+        sayi c = aygit_ekle(ust, "ata", -1);
+        aygit_degisken_koy(c, "kanal", k);
+    }
+}
+
+fonk ata_kaydet() -> bos {
+    surucu_kaydet("atapci", "pci", atapci_yokla, atapci_bagla, veriyolu_genel_ayir);
+    surucu_kaydet("ata", "atapci", ata_yokla, ata_bagla, ata_ayir);
+    surucu_tanima_koy(surucu_kaydet("ata", "nexus", ata_yokla, ata_bagla, ata_ayir), ata_tani);
+}

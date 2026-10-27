@@ -1,6 +1,6 @@
 # Uppix
 
-Uppix, tamamen **u++** ile yazılmış, Unix benzeri küçük bir işletim sistemidir. x86_64 makinede [Limine](onyukleyici/limine) ile diskten **64-bit long mode**'da açılır (BIOS ya da UEFI) ve libc kullanmaz. **Kök dosya sistemi ext4 bir diskte durur** ve yapılan değişiklikler kalıcıdır. USB bellek gibi **FAT32** ve **exFAT** diskleri tanır, okur ve yazar. Kabuk, dosya sistemi sürücüleri ve 79 komutun (`nano` ve `vi` düzenleyicileri ve bir yılan oyunu dahil) hepsi u++ kaynağıdır. Altta yalnızca u++'ın serbest (freestanding) çalışma zamanı vardır: kesmeler, zamanlayıcı, klavye/seri girdi, ATA disk erişimi, bellek ayırıcı ve görev geçişi.
+Uppix, tamamen **u++** ile yazılmış, Unix benzeri küçük bir işletim sistemidir. x86_64 makinede [Limine](onyukleyici/limine) ile diskten **64-bit long mode**'da açılır (BIOS ya da UEFI) ve libc kullanmaz. **Kök dosya sistemi ext4 bir diskte durur** ve yapılan değişiklikler kalıcıdır. USB bellek gibi **FAT32** ve **exFAT** diskleri tanır, okur ve yazar. Kabuk, aygıt sürücüleri, dosya sistemi sürücüleri ve 81 komutun (`nano` ve `vi` düzenleyicileri ve bir yılan oyunu dahil) hepsi u++ kaynağıdır. Altta yalnızca u++'ın serbest (freestanding) çalışma zamanı vardır: kesmeler, zamanlayıcı, klavye/seri girdi, ATA disk erişimi, PCI yapılandırma alanı ve MMIO pencereleri, bellek ayırıcı ve görev geçişi.
 
 Uppix **kullanıcı programlarını ring 3'te** çalıştırır. Sistem çağrıları **Linux x86_64 ile birebir uyumludur**: Linux için statik derlenmiş bir ELF (libc'siz ya da **glibc ile `gcc -static`**), Uppix'te değiştirilmeden çalışır ve aynı çıktıyı verir.
 
@@ -60,7 +60,8 @@ Eski Multiboot yolu da durur: `--onyukleyici multiboot` (varsayılan) ile çekir
   - **FAT32:** okuma ve yazma. VFAT uzun dosya adları (UTF-16) okunur ve yazılır, `AD~1.UZN` kısa adları üretilir, tüm FAT kopyaları birlikte güncellenir.
   - **exFAT:** okuma ve yazma. Ayırma bitmap'i, FAT zinciri ve bitişik (NoFatChain) kümeler, girdi kümesi sağlaması, büyük harf tablosuna göre ad karması ve birim etiketi desteklenir.
   - **Bellekte:** `/proc` (`cpuinfo`, `meminfo`, `mounts`, `partitions`, `uptime`, `version`, `dmesg`), `/dev` (`null`, `console`, `tty`, `random`, `sda`…), `/tmp` ve `/mnt` (tmpfs), `/bin` (yerleşik komutlar).
-- **Diskler:** ATA PIO ile en çok 4 disk (`sda`…`sdd`); MBR ve GPT bölüm tabloları (`sdb1`…). Açılışta `uppix-kok` etiketli (yoksa ilk) ext4 kök olarak bağlanır, `UPPIXBOOT` etiketli FAT32 bölümü `/boot`'a, diğer dosya sistemleri `/mnt/<aygıt>` altına bağlanır.
+- **Aygıt ağacı ve sürücü çatısı:** FreeBSD newbus tasarımı. Kökte `nexus0`, altında `pci0`: PCI veri yolu 0..255 taranır (çok işlevli aygıtlar dahil), her aygıtın kimliği, sınıfı ve BAR'ları (taban ve boyut) çocuğun değişkenlerine yazılır, sonra sürücüler yoklanır; FreeBSD gibi en yüksek öncelikli sürücü kazanır. Sürücüler `hostb`, `isab`, `atapci` (PIIX3/PIIX4 IDE) ve `ata` (kanallar); PCI'da IDE denetleyicisi yoksa ATA kanalları kökte eski ISA aygıtları olarak aranır. Sürücüler için BAR'ın MMIO penceresini açma, bellek alanı ve bus master açma ve hizalı DMA tamponları (fiziksel adresiyle) hazırdır. `devinfo` ağacı, `pciconf -l` PCI aygıtlarını FreeBSD biçiminde gösterir.
+- **Diskler:** disk sürücüleri bulduğu diskleri ortak bir disk kaydına koyar; blok katmanı yalnızca kayıttaki okuma/yazma fonksiyonlarını kullanır. ATA PIO ile en çok 4 disk (`sda`…`sdd`, bulunma sırasıyla); MBR ve GPT bölüm tabloları (`sdb1`…). Açılışta `uppix-kok` etiketli (yoksa ilk) ext4 kök olarak bağlanır, `UPPIXBOOT` etiketli FAT32 bölümü `/boot`'a, diğer dosya sistemleri `/mnt/<aygıt>` altına bağlanır.
 - **Kabuk (`uppsh`):** boru (`|`), yönlendirme (`>`, `>>`, `<`, `2>`), `;`, `&&`, `||` ve arka plan işleri (`&`, `jobs`, `kill %1`). Ayrıca `$AD`, `${AD}`, `$?`, `$$`, `$1…$9`, `$#`, `$@`, `~`, joker (`*`, `?`), tek/çift tırnak, takma adlar, betikler (`sh dosya`, `source`, `PATH` üzerinden çalıştırılabilir dosyalar) ve `/etc/profile`.
 - **Satır düzenleyici:** ↑/↓ geçmiş, ←/→, Home/End, Delete, Tab ile komut ve dosya adı tamamlama, Ctrl-A/E/U/K/W/L/C/D.
 - **Görevler:** işbirlikçi çoklu görev (en çok 32 görev, her biri 64 KiB yığınla). Görevler `sleep` sırasında ve girdi beklenirken sıra verir. `ps`, `kill` ve `jobs` ile yönetilirler.
@@ -172,6 +173,7 @@ Kullanıcı kipi yalnızca Limine ile açılışta vardır. Multiboot'ta çekird
 |---|---|
 | Dosya | `ls` `cd` `pwd` `cat` `mkdir` `rmdir` `touch` `rm` `cp` `mv` `find` `tree` `stat` `du` `chmod` `basename` `dirname` |
 | Disk | `lsblk` `blkid` `mount` (`-t`, `-o ro`) `umount` `df` `sync` |
+| Aygıt | `devinfo` (`-v`) `pciconf` (`-l`, `-lv`, `-lb`) |
 | Metin | `echo` `wc` `head` `tail` `grep` `sort` `uniq` `rev` `cut` `tr` `seq` `tee` `hexdump` `hd` |
 | Düzenleyici | `nano` `vi` (`vim`) |
 | Sistem | `ps` `jobs` `kill` `sleep` `uptime` `uname` `date` `free` `dmesg` `nproc` `uppfetch` `clear` `reboot` `poweroff` (`halt`, `shutdown`) |
@@ -203,14 +205,16 @@ root@uppix:~# umount /mnt/sdb1
 |---|---|
 | `kaynak/uppix.upp` | Açılış: çekirdek günlüğü, disk tarama, kök bağlama, sanal dosya sistemleri, `/etc`, komut tablosu, oturum |
 | `kaynak/vfs.upp` | VFS: düğüm önbelleği (`sinif Dugum`), bağlama tablosu, sürücü arayüzü (`sinif Surucu`), yol çözme, `/proc` |
-| `kaynak/blok.upp` | Blok aygıtları: ATA diskleri, MBR/GPT bölümleri, dosya sistemi tanıma |
+| `kaynak/veriyolu.upp` | Aygıt ağacı ve sürücü çatısı (FreeBSD newbus): aygıtlar, sürücü kaydı (`DRIVER_MODULE`), yoklama/bağlama/ayırma, `nexus`, PCI veri yolu taraması ve BAR'lar, `hostb`/`isab`, MMIO (bus_space) ve DMA (bus_dma) kaynak işlevleri |
+| `kaynak/blok.upp` | Blok aygıtları: disk kaydı (sürücülerin okuma/yazma fonksiyon değerleri), MBR/GPT bölümleri, dosya sistemi tanıma |
+| `kaynak/ata.upp` | ATA sürücüleri: PCI IDE denetleyicisi (`atapci`) ve kanalları (`ata`); diskleri disk kaydına koyar |
 | `kaynak/ext4.upp` | ext4 sürücüsü |
 | `kaynak/fat.upp` | FAT32 sürücüsü |
 | `kaynak/exfat.upp` | exFAT sürücüsü |
 | `kaynak/kabuk.upp` | `uppsh`: satır bölme, jetonlar ve açılımlar, boru ve yönlendirme, ve-veya listeleri, arka plan işleri, betikler |
 | `kaynak/satir.upp` | Satır düzenleyici, geçmiş, Tab tamamlama, Ctrl-C ile kesme |
 | `kaynak/cikti.upp` | Görev başına çıktı yakalama (boru ve yönlendirme için) |
-| `kaynak/komut_*.upp` | Komutlar; her biri `fonk(liste[metin] a, metin girdi) -> sayi` (`komut_oyun.upp`: `snake`, `komut_nano.upp`, `komut_vi.upp`, `komut_hexdump.upp`) |
+| `kaynak/komut_*.upp` | Komutlar; her biri `fonk(liste[metin] a, metin girdi) -> sayi` (`komut_oyun.upp`: `snake`, `komut_nano.upp`, `komut_vi.upp`, `komut_hexdump.upp`, `komut_aygit.upp`: `devinfo`, `pciconf`) |
 | `kaynak/surec.upp` | Kullanıcı süreçleri: süreç tablosu, dosya tanımlayıcıları, ELF64 yükleyici, SysV ilk yığını, kabuktan çalıştırma |
 | `kaynak/sistem_cagrisi.upp` | Linux x86_64 sistem çağrısı dağıtıcısı; G/Ç ve bellek (read, write, open, stat, lseek, ioctl, mmap, brk…) |
 | `kaynak/sistem_cagrisi_dosya.upp` | Dosya sistemi ve tanımlayıcı çağrıları (pread/pwrite, readv/writev, dup, fcntl, getdents64, access, getcwd/chdir, mkdir, unlink, rename, readlink) |
@@ -221,7 +225,7 @@ root@uppix:~# umount /mnt/sdb1
 
 Her dosya sistemi sürücüsü fonksiyon değerlerinden oluşan bir `sinif Surucu`'dur: `bagla`, `yukle` (dizini önbelleğe al), `oku`, `yaz`, `olustur`, `sil`, `tasi`, `oznitelik`, `alan`. VFS hangi düğümün hangi bağlamaya ait olduğunu bilir ve doğru sürücüyü çağırır. Dizinler ilk erişimde yüklenir. Komutlar dosya sisteminden habersizdir; `cp /root/a.txt /mnt/sdc/` gibi diskler arası kopyalama aynı kodla çalışır.
 
-İkili veri `upp.tampon.*` ile işlenir. Bunlar sınır denetimli bayt tamponlarıdır: küçük sonlu okuma/yazma, UTF-16, CRC32C. Disk erişimi `upp.cekirdek.disk_oku/disk_yaz` ile yapılır. Ayrıntılar için [U++ API belgesine](https://github.com/ploxdev/upp-lang/blob/main/docs/API_tr.md) bakın.
+İkili veri `upp.tampon.*` ile işlenir. Bunlar sınır denetimli bayt tamponlarıdır: küçük sonlu okuma/yazma, UTF-16, CRC32C. Diske blok katmanı disk kaydı üzerinden erişir; ATA sürücüsü kayda çekirdeğin `upp.cekirdek.disk_oku/disk_yaz` PIO mekanizmasını koyar. Sürücüler PCI yapılandırma alanını `upp.cekirdek.pci_oku` ile okur; yapılandırma yazma ve BAR penceresi açma (`pci_yaz`, `mmio_ac`) `guvensiz` gerektirir ve yalnızca `veriyolu.upp`'deki iki yerde yapılır, pencere içi erişim (`mmio_oku/yaz`) sınır denetimlidir. Ayrıntılar için [U++ API belgesine](https://github.com/ploxdev/upp-lang/blob/main/docs/API_tr.md) bakın.
 
 ### Testler
 
@@ -241,6 +245,7 @@ python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix
 | `tests/cekirdek/08_uppix_disk_kaynak.upp` | Linux'ta `fallocate` ile ayrılmış (yazılmamış kapsamlı) ext4 dosyası sıfır okunur ve silinince blokları bırakılır; FAT32 art arda ayrılıp yeniden bağlanır; sonra `e2fsck` ve `fsck.fat` |
 | `tests/cekirdek/07_uppix_araclar.upp` | `hexdump`/`hd` biçimleri; tuşları seri porttan gelen `nano` (yazma, kes/yapıştır, arama, kaydetmeyi sorma) ve `vi` (ekleme, `yy p`, `dd`, `:%s`, `:q`'nun reddi, `:wq`) oturumları |
 | `tests/cekirdek/05_uppix_snake.upp` | `snake -o -n 200` otopilotu beklemeden oynatır; rekor dosyası, boru/yönlendirmede reddetme ve seçenek hataları |
+| `tests/cekirdek/09_uppix_veriyolu.upp` | QEMU i440fx'te aygıt ağacı: `pciconf -l`/`-lv`/`-lb` ana köprüyü (8086:1237) ve PIIX3 IDE'yi (`atapci0`) gösterir, `devinfo` `nexus0 → pci0 → atapci0 → ata0/ata1`; diskler `ata` sürücüsünden disk kaydına girer, ext4'e ve FAT32'ye eskisi gibi erişilir, sonra `e2fsck` ve `debugfs` |
 | `tests/cekirdek/04_uppix_limine.upp` | `uppix.img`'i üretir ve Limine ile 64-bit açar; `/boot` ve kökü yazar, sonra iki bölümü `e2fsck`, `fsck.fat` ve `mtype` ile denetler |
 
 ## Sınırlar ve sıradakiler
@@ -248,6 +253,7 @@ python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix
 - ext4 yazımı günlük (journal) kullanmaz. Dosya en çok 4 extent'te tutulur, yani boş alan çok parçalıysa büyük dosya yazılamaz. htree ile dizinlenmiş büyük dizinlere ekleme yapılmaz. Grup bitmap'i başlatılmamış (`*_UNINIT`) gruplar ayırmada atlanır.
 - FAT12/FAT16 ve 512 bayt dışı sektör boyutları desteklenmez. Önbellek yoktur: her işlem diske gider.
 - Disk sürücüsü ATA PIO'dur; AHCI/NVMe ve virtio-blk sırada.
+- Aygıt ağacında PCI-PCI köprüleri ayrı veri yolu (`pcib`) olarak yer almaz: bütün veri yolları `pci0`'ın altında düz taranır. Sürücülere kesme (INTx/MSI) bağlanmaz, G/Ç BAR'ları için pencere yoktur. Multiboot yolunda BAR'ın MMIO penceresi yalnızca ilk 1 GiB'de açılabilir (Limine'de HHDM'in kapsadığı her adreste; QEMU'nun 4 GiB altındaki BAR'ları açılır).
 - Çekirdek içindeki kod işbirlikçidir; yalnızca ring 3 kodu kesilir. Yerleşik komutlar çekirdek içinde çalışır.
 - Kullanıcı süreçleri tek iş parçacıklıdır (`clone` yok). `fork`/`execve`, sinyal işleyicilerinin çağrılması, dinamik bağlama (`PT_INTERP`), sembolik bağlar ve `rseq` henüz yok; statik programlar (libc'siz ya da glibc) çalışır. `dup` ile çoğaltılan tanımlayıcılar dosya konumunu paylaşmaz. Yığın 1 MiB'dır ve sayfa hatasıyla büyümez.
 - Çerçeve tamponu 4 GiB'nin altında ve RGB olmalı; değilse ekran çıktısı yalnızca seri porta gider. SMP yok: yalnızca açılış işlemcisi çalışır.

@@ -1,6 +1,59 @@
-// Uppix — blok aygıtları: ATA diskleri, MBR/GPT bölümleri ve dosya sistemi tanıma.
-// Diskler sda, sdb... ; bölümler sda1, sda2... adını alır. Bölüm tablosu olmayan
-// disklerde dosya sistemi doğrudan diskin başındadır.
+// Uppix — blok aygıtları: disk kaydı, MBR/GPT bölümleri ve dosya sistemi tanıma.
+// Disk sürücüleri (ata.upp) bulduğu diskleri disk kaydına koyar; blok katmanı diske
+// yalnızca kayıttaki okuma/yazma fonksiyon değerleriyle erişir. Diskler kayıt sırasıyla
+// sda, sdb... ; bölümler sda1, sda2... adını alır. Bölüm tablosu olmayan disklerde
+// dosya sistemi doğrudan diskin başındadır.
+
+// Disk kaydı (FreeBSD disk_create karşılığı). no sürücüye özel disk numarasıdır (ATA:
+// sürücü 0..3); oku/yaz onu ilk argüman olarak alır: (no, lba, adet, tampon, ofs).
+sinif Disk {
+    metin ad;
+    sayi aygit;
+    sayi no;
+    metin model;
+    sayi sektor;
+    mantik etkin;
+    fonk(sayi, sayi, sayi, sayi, sayi) -> mantik oku;
+    fonk(sayi, sayi, sayi, sayi, sayi) -> mantik yaz;
+}
+
+liste[Disk] g_disk;
+
+fonk disk_kaydet(sayi aygit, sayi no, metin model, sayi sektor, fonk(sayi, sayi, sayi, sayi, sayi) -> mantik oku, fonk(sayi, sayi, sayi, sayi, sayi) -> mantik yaz) -> sayi {
+    metin harfler = "abcdefghijklmnopqrstuvwxyz";
+    sayi d = g_disk.uzunluk();
+    Disk k;
+    k.ad = "sd" + kes(harfler, d % 26, 1);
+    k.aygit = aygit;
+    k.no = no;
+    k.model = model;
+    k.sektor = sektor;
+    k.etkin = dogru;
+    k.oku = oku;
+    k.yaz = yaz;
+    g_disk.ekle(k);
+    klog(k.ad + ": <" + model + "> " + boyut_insan(sektor * 512) + ", " + aygit_adi(aygit) + " üzerinde");
+    don d;
+}
+
+// Aygıt ayrılınca diskleri kayıtta kalır (adlar kaymaz) ama erişim yanlış döner.
+fonk disk_sil(sayi aygit) -> bos {
+    dongu (sayi d = 0; d < g_disk.uzunluk(); d += 1) {
+        eger (g_disk[d].aygit == aygit) { g_disk[d].etkin = yanlis; }
+    }
+}
+
+fonk disk_oku(sayi d, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik {
+    eger (d < 0 || d >= g_disk.uzunluk() || !g_disk[d].etkin) { don yanlis; }
+    Disk k = g_disk[d];
+    don k.oku(k.no, lba, adet, t, ofs);
+}
+
+fonk disk_yaz(sayi d, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik {
+    eger (d < 0 || d >= g_disk.uzunluk() || !g_disk[d].etkin) { don yanlis; }
+    Disk k = g_disk[d];
+    don k.yaz(k.no, lba, adet, t, ofs);
+}
 
 sinif BlokAygit {
     metin ad;
@@ -16,12 +69,12 @@ liste[BlokAygit] g_blok;
 
 fonk blok_oku(sayi b, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik {
     eger (lba < 0 || lba + adet > g_blok[b].sektor) { don yanlis; }
-    don upp.cekirdek.disk_oku(g_blok[b].disk, g_blok[b].bas + lba, adet, t, ofs);
+    don disk_oku(g_blok[b].disk, g_blok[b].bas + lba, adet, t, ofs);
 }
 
 fonk blok_yaz(sayi b, sayi lba, sayi adet, sayi t, sayi ofs) -> mantik {
     eger (lba < 0 || lba + adet > g_blok[b].sektor) { don yanlis; }
-    don upp.cekirdek.disk_yaz(g_blok[b].disk, g_blok[b].bas + lba, adet, t, ofs);
+    don disk_yaz(g_blok[b].disk, g_blok[b].bas + lba, adet, t, ofs);
 }
 
 // Tampondaki baytlar verilen ASCII metinle başlıyor mu?
@@ -76,7 +129,7 @@ fonk blok_ekle(metin ad, sayi disk, sayi bolum, sayi bas, sayi sektor) -> sayi {
 
 fonk bolumleri_tara(sayi disk, metin ad, sayi toplam) -> bos {
     sayi t = upp.tampon.yeni(1024);
-    eger (!upp.cekirdek.disk_oku(disk, 0, 2, t, 0) || upp.tampon.oku16(t, 510) != 43605) {
+    eger (!disk_oku(disk, 0, 2, t, 0) || upp.tampon.oku16(t, 510) != 43605) {
         upp.tampon.birak(t);
         don;
     }
@@ -89,7 +142,7 @@ fonk bolumleri_tara(sayi disk, metin ad, sayi toplam) -> bos {
             eger (adet > 128) { adet = 128; }
             sayi gt = upp.tampon.yeni(adet * boy + 512);
             sayi sektor_say = (adet * boy + 511) / 512;
-            eger (upp.cekirdek.disk_oku(disk, tablo, sektor_say, gt, 0)) {
+            eger (disk_oku(disk, tablo, sektor_say, gt, 0)) {
                 sayi no = 1;
                 dongu (sayi i = 0; i < adet; i += 1) {
                     sayi e = i * boy;
@@ -118,11 +171,10 @@ fonk bolumleri_tara(sayi disk, metin ad, sayi toplam) -> bos {
 
 fonk blok_tara() -> bos {
     g_blok.temizle();
-    metin harfler = "abcd";
-    dongu (sayi d = 0; d < 4; d += 1) {
-        eger (!upp.cekirdek.disk_var(d)) { devam; }
-        metin ad = "sd" + kes(harfler, d, 1);
-        sayi toplam = upp.cekirdek.disk_sektor(d);
+    dongu (sayi d = 0; d < g_disk.uzunluk(); d += 1) {
+        eger (!g_disk[d].etkin) { devam; }
+        metin ad = g_disk[d].ad;
+        sayi toplam = g_disk[d].sektor;
         sayi no = blok_ekle(ad, d, 0, 0, toplam);
         eger (g_blok[no].fs == "") { bolumleri_tara(d, ad, toplam); }
     }
