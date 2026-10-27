@@ -1,0 +1,351 @@
+// Uppix — girdi ve konsol aygıtlarının sistem çağrıları (Linux x86_64).
+// /dev/input/event0 (klavye) ve event1 (fare): evdev, 24 baytlık struct input_event
+// { timeval; u16 type; u16 code; s32 value }, ioctl'lar EVIOCGVERSION, EVIOCGID,
+// EVIOCGNAME, EVIOCGPHYS, EVIOCGUNIQ, EVIOCGPROP, EVIOCGKEY, EVIOCGBIT, EVIOCGRAB,
+// EVIOCSCLOCKID. /dev/input/mice: mousedev (PS/2 3 bayt; 200/100/80 hız dizisi
+// yazılınca ImPS/2 4 bayt). Terminal: KDGETMODE/KDSETMODE, KDGKBMODE/KDSKBMODE,
+// KDGKBTYPE, KDGETLED/KDSETLED, VT_OPENQRY, VT_GETSTATE, VT_GETMODE/VT_SETMODE,
+// VT_ACTIVATE/VT_WAITACTIVE, VT_RELDISP (tek VT); K_RAW/K_MEDIUMRAW'da okuma ham
+// baytları verir. Okumalar engelleyicidir, O_NONBLOCK'ta EAGAIN döner.
+
+sabit sayi KDGETLED = 0x4B31;
+sabit sayi KDSETLED = 0x4B32;
+sabit sayi KDGKBTYPE = 0x4B33;
+sabit sayi KDSETMODE = 0x4B3A;
+sabit sayi KDGETMODE = 0x4B3B;
+sabit sayi KDGKBMODE = 0x4B44;
+sabit sayi KDSKBMODE = 0x4B45;
+sabit sayi VT_OPENQRY = 0x5600;
+sabit sayi VT_GETMODE = 0x5601;
+sabit sayi VT_SETMODE = 0x5602;
+sabit sayi VT_GETSTATE = 0x5603;
+sabit sayi VT_RELDISP = 0x5605;
+sabit sayi VT_ACTIVATE = 0x5606;
+sabit sayi VT_WAITACTIVE = 0x5607;
+sabit sayi IOCTL_YOK = -1000000;
+
+fonk olay_aygiti(metin a) -> sayi {
+    eger (a == "olay0") { don OLAY_KLAVYE; }
+    eger (a == "olay1") { don OLAY_FARE; }
+    eger (a == "fare_ps2") { don OLAY_MICE; }
+    don -1;
+}
+
+// Aygıt numarası (st_rdev, glibc makedev: büyük * 256 + küçük).
+fonk aygit_rdev(sayi no) -> sayi {
+    metin a = g_fs[no].aygit;
+    metin ad = g_fs[no].ad;
+    eger (a == "null") { don 1 * 256 + 3; }
+    eger (a == "rastgele") { don 1 * 256 + 8; }
+    eger (a == "fb") { don 29 * 256; }
+    eger (a == "olay0") { don 13 * 256 + 64; }
+    eger (a == "olay1") { don 13 * 256 + 65; }
+    eger (a == "fare_ps2") { don 13 * 256 + 63; }
+    eger (a == "konsol") {
+        eger (ad == "console") { don 5 * 256 + 1; }
+        eger (ad == "tty") { don 5 * 256; }
+        eger (ad == "tty1") { don 4 * 256 + 1; }
+        don 4 * 256;
+    }
+    eger (a == "blok") {
+        sayi b = blok_bul(ad);
+        eger (b >= 0) { don 8 * 256 + g_blok[b].disk * 16 + g_blok[b].bolum; }
+    }
+    don 0;
+}
+
+// ---- okuma / yazma ----
+
+// Engelleyen bekleme: veri gelene dek (O_NONBLOCK'ta EAGAIN). Dönüş 0 ya da -errno.
+fonk olay_bekle(sayi s, sayi y) -> sayi {
+    sayi i = g_fd_no[y];
+    iken (!olay_hazir_mi(i)) {
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    don 0;
+}
+
+fonk sc_olay_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi i = g_fd_no[y];
+    mantik mice = g_girdi[i].aygit == OLAY_MICE;
+    // evdev yalnızca bütün olaylar verir
+    eger (!mice && n < 24) { don -EINVAL; }
+    sayi r = olay_bekle(s, y);
+    eger (r < 0) { don r; }
+    sayi bas = g_girdi[i].bas;
+    sayi var = g_girdi[i].kuyruk.uzunluk() - bas;
+    eger (mice) {
+        sayi k = upp.min(n, var);
+        sayi t = upp.tampon.yeni(k);
+        her (sayi j in 0..k) { upp.tampon.yaz8(t, j, g_girdi[i].kuyruk[bas + j]); }
+        eger (sc_yapi_ver(s, buf, t, k) < 0) { don -EFAULT; }
+        girdi_kuyruk_tuket(i, k);
+        don k;
+    }
+    sayi adet = upp.min(n / 24, var / 5);
+    // zaman damgası: CLOCK_REALTIME (varsayılan) ya da EVIOCSCLOCKID ile MONOTONIC
+    sayi fark = 0;
+    eger (g_girdi[i].saat == 0) { fark = saat_ms(0) - upp.zaman(); }
+    sayi t = upp.tampon.yeni(adet * 24);
+    her (sayi j in 0..adet) {
+        sayi o = bas + j * 5;
+        sayi ms = g_girdi[i].kuyruk[o] + fark;
+        upp.tampon.yaz64(t, j * 24, ms / 1000);
+        upp.tampon.yaz64(t, j * 24 + 8, ms % 1000 * 1000);
+        upp.tampon.yaz16(t, j * 24 + 16, g_girdi[i].kuyruk[o + 1]);
+        upp.tampon.yaz16(t, j * 24 + 18, g_girdi[i].kuyruk[o + 2]);
+        upp.tampon.yaz32(t, j * 24 + 20, g_girdi[i].kuyruk[o + 3] & 0xFFFFFFFF);
+    }
+    eger (sc_yapi_ver(s, buf, t, adet * 24) < 0) { don -EFAULT; }
+    girdi_kuyruk_tuket(i, adet * 5);
+    don adet * 24;
+}
+
+// mousedev'e komut baytları yazılabilir (ImPS/2'ye geçiş, kimlik, sıfırlama); evdev'e
+// olay yazma (olay enjeksiyonu) yok.
+fonk sc_olay_yaz(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi i = g_fd_no[y];
+    eger (g_girdi[i].aygit != OLAY_MICE) { don -EINVAL; }
+    sayi t = upp.tampon.yeni(n);
+    eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, buf, t, 0, n)) {
+        upp.tampon.birak(t);
+        don -EFAULT;
+    }
+    her (sayi j in 0..n) { mice_komut(i, upp.tampon.oku8(t, j)); }
+    upp.tampon.birak(t);
+    don n;
+}
+
+// K_RAW (tarama kodları) ya da K_MEDIUMRAW (tuş kodları) kipinde terminal okuması.
+fonk sc_tty_ham_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    iken (dogru) {
+        girdi_topla();
+        eger (g_tty_ham.uzunluk() > 0) { dur; }
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi k = upp.min(n, g_tty_ham.uzunluk());
+    sayi t = upp.tampon.yeni(k);
+    her (sayi j in 0..k) { upp.tampon.yaz8(t, j, g_tty_ham[j]); }
+    eger (sc_yapi_ver(s, buf, t, k) < 0) { don -EFAULT; }
+    liste[sayi] kalan;
+    her (sayi j in k..g_tty_ham.uzunluk()) { kalan.ekle(g_tty_ham[j]); }
+    g_tty_ham = kalan;
+    don k;
+}
+
+// ---- ioctl ----
+
+fonk sc_int_ver(sayi s, sayi adres, sayi v) -> sayi {
+    sayi t = upp.tampon.yeni(4);
+    upp.tampon.yaz32(t, 0, v & 0xFFFFFFFF);
+    don sc_yapi_ver(s, adres, t, 4);
+}
+
+// Metin (NUL dahil) en çok n bayt; dönüş kopyalanan bayt (EVIOCGNAME gibi).
+fonk sc_metin_ver(sayi s, sayi adres, metin m, sayi n) -> sayi {
+    sayi k = upp.min(n, bayt_say(m) + 1);
+    eger (k <= 0) { don 0; }
+    eger (!sc_yaz_metin(s, adres, m + "\x00", 0, k)) { don -EFAULT; }
+    don k;
+}
+
+// Bit eşlemi (bitler sayı listesi), boy bayt; dönüş min(n, boy).
+fonk sc_bitler_ver(sayi s, sayi adres, liste[sayi] bitler, sayi boy, sayi n) -> sayi {
+    sayi k = upp.min(n, boy);
+    eger (k <= 0) { don 0; }
+    sayi t = upp.tampon.yeni(boy);
+    her (oto b in bitler) {
+        eger (b / 8 < boy) { upp.tampon.yaz8(t, b / 8, upp.tampon.oku8(t, b / 8) | iki_ussu(b % 8)); }
+    }
+    mantik ok = upp.cekirdek.kullanici_yaz(g_surec[s].ka, adres, t, 0, k);
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    don k;
+}
+
+// Aygıtın ürettiği tuşlar (EV_KEY bitleri).
+fonk olay_tuslari(sayi aygit) -> liste[sayi] {
+    liste[sayi] L;
+    eger (aygit == OLAY_FARE) {
+        L.ekle(BTN_LEFT);
+        L.ekle(BTN_RIGHT);
+        L.ekle(BTN_MIDDLE);
+        don L;
+    }
+    her (sayi k in 1..89) { eger (k != 84 && k != 85) { L.ekle(k); } }
+    her (sayi k in 96..112) { eger (k != 101) { L.ekle(k); } }
+    L.ekle(KEY_PAUSE);
+    L.ekle(125);
+    L.ekle(126);
+    L.ekle(127);
+    don L;
+}
+
+// _IOC: yön (2 bit) << 30 | boy (14 bit) << 16 | tür << 8 | numara.
+fonk sc_olay_ioctl(sayi s, sayi y, sayi istek, sayi arg) -> sayi {
+    sayi i = g_fd_no[y];
+    sayi aygit = g_girdi[i].aygit;
+    eger (aygit == OLAY_MICE) { don -ENOTTY; }
+    sayi r = istek & 0xFFFFFFFF;
+    sayi tur = (r / 256) % 256;
+    sayi nr = r % 256;
+    sayi boy = (r / 65536) % 16384;
+    eger (tur != 0x45) { don -EINVAL; }
+    mantik fare = aygit == OLAY_FARE;
+    eger (nr == 0x01) { don sc_int_ver(s, arg, 0x010001); }          // EVIOCGVERSION
+    eger (nr == 0x02) {                                               // EVIOCGID
+        // struct input_id { bustype, vendor, product, version } (u16): BUS_I8042
+        sayi t = upp.tampon.yeni(8);
+        upp.tampon.yaz16(t, 0, 0x11);
+        eger (fare) {
+            upp.tampon.yaz16(t, 2, 2);
+            eger (g_psm_kimlik == 3) { upp.tampon.yaz16(t, 4, 3); } yoksa { upp.tampon.yaz16(t, 4, 1); }
+        } yoksa {
+            upp.tampon.yaz16(t, 2, 1);
+            upp.tampon.yaz16(t, 4, 1);
+            upp.tampon.yaz16(t, 6, 0xab41);
+        }
+        don sc_yapi_ver(s, arg, t, 8);
+    }
+    eger (nr == 0x06) {                                               // EVIOCGNAME(len)
+        eger (fare) { don sc_metin_ver(s, arg, fare_adi(), boy); }
+        don sc_metin_ver(s, arg, "AT Translated Set 2 keyboard", boy);
+    }
+    eger (nr == 0x07) {                                               // EVIOCGPHYS(len)
+        eger (fare) { don sc_metin_ver(s, arg, "isa0060/serio1/input0", boy); }
+        don sc_metin_ver(s, arg, "isa0060/serio0/input0", boy);
+    }
+    eger (nr == 0x08) { don -ENOENT; }                                // EVIOCGUNIQ: yok
+    liste[sayi] bos_liste;
+    eger (nr == 0x09) { don sc_bitler_ver(s, arg, bos_liste, 4, boy); } // EVIOCGPROP
+    eger (nr == 0x18) {                                               // EVIOCGKEY: basılı tuşlar
+        liste[sayi] basili;
+        eger (!fare) {
+            her (sayi k in 0..g_tus_basili.uzunluk()) { eger (g_tus_basili[k]) { basili.ekle(k); } }
+        } yoksa {
+            eger ((g_fare_tuslar & 1) != 0) { basili.ekle(BTN_LEFT); }
+            eger ((g_fare_tuslar & 2) != 0) { basili.ekle(BTN_RIGHT); }
+            eger ((g_fare_tuslar & 4) != 0) { basili.ekle(BTN_MIDDLE); }
+        }
+        don sc_bitler_ver(s, arg, basili, 96, boy);
+    }
+    eger (nr == 0x19 || nr == 0x1A || nr == 0x1B) { don sc_bitler_ver(s, arg, bos_liste, 8, boy); } // LED, SND, SW
+    eger (nr >= 0x20 && nr < 0x40) {                                  // EVIOCGBIT(ev, len)
+        sayi ev = nr - 0x20;
+        liste[sayi] b;
+        eger (ev == 0) {
+            b.ekle(EV_SYN);
+            b.ekle(EV_KEY);
+            eger (fare) { b.ekle(EV_REL); }
+            don sc_bitler_ver(s, arg, b, 4, boy);
+        }
+        eger (ev == EV_KEY) { don sc_bitler_ver(s, arg, olay_tuslari(aygit), 96, boy); }
+        eger (ev == EV_REL) {
+            eger (fare) {
+                b.ekle(REL_X);
+                b.ekle(REL_Y);
+                eger (g_psm_kimlik == 3) { b.ekle(REL_WHEEL); }
+            }
+            don sc_bitler_ver(s, arg, b, 2, boy);
+        }
+        // EV_ABS 8, EV_MSC 1, EV_SW 3, EV_LED 2, EV_SND 1, EV_REP 1, EV_FF 16 bayt: boş
+        sayi ebat = 0;
+        eger (ev == 3) { ebat = 8; }
+        eger (ev == 4 || ev == 0x12 || ev == 0x14) { ebat = 1; }
+        eger (ev == 5) { ebat = 3; }
+        eger (ev == 0x11) { ebat = 2; }
+        eger (ev == 0x15) { ebat = 16; }
+        eger (ebat == 0) { don -EINVAL; }
+        don sc_bitler_ver(s, arg, b, ebat, boy);
+    }
+    eger (nr == 0x90) {                                               // EVIOCGRAB
+        sayi kapan = g_kapan_klavye;
+        eger (fare) { kapan = g_kapan_fare; }
+        eger (arg != 0) {
+            eger (kapan >= 0) { don -EBUSY; }
+            eger (fare) { g_kapan_fare = i; } yoksa { g_kapan_klavye = i; }
+            don 0;
+        }
+        eger (kapan != i) { don -EINVAL; }
+        eger (fare) { g_kapan_fare = -1; } yoksa { g_kapan_klavye = -1; }
+        don 0;
+    }
+    eger (nr == 0xA0) {                                               // EVIOCSCLOCKID
+        sayi t = upp.tampon.yeni(4);
+        eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 4)) {
+            upp.tampon.birak(t);
+            don -EFAULT;
+        }
+        sayi saat = upp.tampon.oku32(t, 0);
+        upp.tampon.birak(t);
+        eger (saat == 0) { g_girdi[i].saat = 0; } yoksa eger (saat == 1 || saat == 7) { g_girdi[i].saat = 1; } yoksa { don -EINVAL; }
+        don 0;
+    }
+    don -EINVAL;
+}
+
+// Terminal (tek sanal konsol) ioctl'ları; bunlardan biri değilse IOCTL_YOK.
+fonk sc_konsol_ioctl(sayi s, sayi istek, sayi arg) -> sayi {
+    sayi pid = g_surec[s].pid;
+    eger (istek == KDGETMODE) { don sc_int_ver(s, arg, g_kd_kip); }
+    eger (istek == KDSETMODE) {
+        // KD_TEXT0 / KD_TEXT1 metin kipidir
+        eger (arg == 2 || arg == 3) { arg = KD_TEXT; }
+        eger (arg != KD_TEXT && arg != KD_GRAPHICS) { don -EINVAL; }
+        eger (arg != g_kd_kip) { konsol_grafik_kip(pid, arg); }
+        g_konsol_sahip = pid;
+        don 0;
+    }
+    eger (istek == KDGKBMODE) { don sc_int_ver(s, arg, g_kb_kip); }
+    eger (istek == KDSKBMODE) {
+        eger (arg < K_RAW || arg > K_OFF) { don -EINVAL; }
+        konsol_klavye_kip(pid, arg);
+        don 0;
+    }
+    eger (istek == KDGKBTYPE) {
+        sayi t = upp.tampon.yeni(1);
+        upp.tampon.yaz8(t, 0, 2);                 // KB_101
+        don sc_yapi_ver(s, arg, t, 1);
+    }
+    eger (istek == KDGETLED) {
+        sayi t = upp.tampon.yeni(1);
+        don sc_yapi_ver(s, arg, t, 1);
+    }
+    eger (istek == KDSETLED) { don 0; }
+    eger (istek == VT_OPENQRY) { don sc_int_ver(s, arg, 1); }
+    eger (istek == VT_GETSTATE) {
+        // struct vt_stat { v_active, v_signal, v_state } (u16): tek VT (1), kullanımda
+        sayi t = upp.tampon.yeni(6);
+        upp.tampon.yaz16(t, 0, 1);
+        upp.tampon.yaz16(t, 4, 2);
+        don sc_yapi_ver(s, arg, t, 6);
+    }
+    eger (istek == VT_GETMODE) {
+        sayi t = upp.tampon.yeni(8);
+        upp.tampon.yaz64(t, 0, g_vt_kip);
+        don sc_yapi_ver(s, arg, t, 8);
+    }
+    eger (istek == VT_SETMODE) {
+        // struct vt_mode { char mode, waitv; short relsig, acqsig, frsig }
+        sayi t = upp.tampon.yeni(8);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 8);
+        sayi v = upp.tampon.oku64(t, 0);
+        sayi kip = upp.tampon.oku8(t, 0);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+        eger (kip > 2) { don -EINVAL; }
+        g_vt_kip = v;
+        g_konsol_sahip = pid;
+        don 0;
+    }
+    eger (istek == VT_ACTIVATE || istek == VT_WAITACTIVE) {
+        eger (arg != 1) { don -ENXIO; }
+        don 0;
+    }
+    eger (istek == VT_RELDISP) { don 0; }
+    don IOCTL_YOK;
+}

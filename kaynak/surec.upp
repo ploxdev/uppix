@@ -35,6 +35,7 @@ sabit sayi FD_NULL = 5;
 sabit sayi FD_FB = 6;        // /dev/fb0
 sabit sayi FD_BORU_OKU = 7;  // borunun okuma ucu (g_fd_no: g_boru yuvası)
 sabit sayi FD_BORU_YAZ = 8;  // borunun yazma ucu
+sabit sayi FD_OLAY = 9;      // girdi aygıtı: /dev/input/event*, /dev/input/mice (g_fd_no: g_girdi istemcisi)
 
 sinif Surec {
     sayi pid;          // 0: boş yuva
@@ -152,11 +153,22 @@ fonk boru_birak(sayi tur, sayi no) -> bos {
     }
 }
 
-// Tanımlayıcı yuvasını yazar; eski ucun sayacı düşer, yeninin artar (önce artar:
-// aynı boruya yeniden atamada sayaç sıfıra inip boru bitmesin).
-fonk fd_ata(sayi y, sayi tur, sayi no, sayi konum, sayi bayrak) -> bos {
+// Tanımlayıcının gösterdiği nesnenin (boru ucu, girdi istemcisi) sayacı.
+fonk fd_nesne_al(sayi tur, sayi no) -> bos {
     boru_al(tur, no);
-    boru_birak(g_fd_tur[y], g_fd_no[y]);
+    eger (tur == FD_OLAY) { girdi_istemci_al(no); }
+}
+
+fonk fd_nesne_birak(sayi tur, sayi no) -> bos {
+    boru_birak(tur, no);
+    eger (tur == FD_OLAY) { girdi_istemci_birak(no); }
+}
+
+// Tanımlayıcı yuvasını yazar; eski nesnenin sayacı düşer, yeninin artar (önce artar:
+// aynı nesneye yeniden atamada sayaç sıfıra inip nesne bitmesin).
+fonk fd_ata(sayi y, sayi tur, sayi no, sayi konum, sayi bayrak) -> bos {
+    fd_nesne_al(tur, no);
+    fd_nesne_birak(g_fd_tur[y], g_fd_no[y]);
     g_fd_tur.yaz(y, tur);
     g_fd_no.yaz(y, no);
     g_fd_konum.yaz(y, konum);
@@ -254,6 +266,7 @@ fonk surec_kaynak_birak(sayi s, mantik alan_sil) -> bos {
     esl_surec_bitti(s, alan_sil && g_surec[s].ka != 0);
     eger (alan_sil && g_surec[s].ka != 0) { upp.cekirdek.kullanici_alan_sil(g_surec[s].ka); }
     her (sayi fd in 0..FD_MAX) { fd_kur(s, fd, FD_KAPALI, -1, 0); }
+    konsol_surec_bitti(g_surec[s].pid);
     eger (g_surec_gorev.var_mi(g_surec[s].gorev) && g_surec_gorev.al(g_surec[s].gorev) == s) {
         g_surec_gorev.sil(g_surec[s].gorev);
     }

@@ -325,6 +325,8 @@ fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_FB) { don -EINVAL; }
     eger (g_fd_bayrak[y] % 4 == 1) { don -EBADF; }
     eger (tur == FD_BORU_OKU) { don boru_oku(s, y, buf, n); }
+    eger (tur == FD_OLAY) { don sc_olay_oku(s, y, buf, n); }
+    eger (tur == FD_TERMINAL && g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) { don sc_tty_ham_oku(s, y, buf, n); }
     eger (tur == FD_TERMINAL) {
         eger (g_surec[s].satir_artik == "") {
             metin satir_m = sc_terminal_satir(s);
@@ -379,6 +381,7 @@ fonk sc_write(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (n == 0) { don 0; }
     eger (tur == FD_NULL) { don n; }
     eger (tur == FD_BORU_YAZ) { don boru_yaz(s, y, buf, n); }
+    eger (tur == FD_OLAY) { don sc_olay_yaz(s, y, buf, n); }
     metin veri = sc_oku_metin(s, buf, n);
     eger (veri == yok) { don -EFAULT; }
     eger (tur == FD_TERMINAL) {
@@ -444,6 +447,7 @@ fonk sc_open(sayi s, sayi dirfd, sayi yol_adr, sayi bayrak, sayi kip) -> sayi {
         eger (a == "null") { tur = FD_NULL; }
         yoksa eger (a == "konsol") { tur = FD_TERMINAL; }
         yoksa eger (a == "fb") { tur = FD_FB; }
+        yoksa eger (olay_aygiti(a) >= 0) { tur = FD_OLAY; }
         yoksa eger (a != "rastgele") { don -EACCES; }
     } yoksa {
         eger (erisim != 0 && (dt == D_SANAL || fs_salt_okunur(no))) {
@@ -454,6 +458,8 @@ fonk sc_open(sayi s, sayi dirfd, sayi yol_adr, sayi bayrak, sayi kip) -> sayi {
     }
     sayi fd = fd_ayir(s);
     eger (fd < 0) { don -EMFILE; }
+    // girdi aygıtının her açılışı yeni bir istemcidir (kendi olay kuyruğu)
+    eger (tur == FD_OLAY) { no = girdi_istemci_yeni(olay_aygiti(g_fs[no].aygit)); }
     fd_kur(s, fd, tur, no, bayrak);
     eger (tur == FD_TERMINAL) { g_fd_no.yaz(fd_yer(s, fd), -2); }
     don fd;
@@ -500,7 +506,9 @@ fonk sc_dugum_stat(sayi no) -> sayi {
     eger (ino <= 0) { ino = no + 1; }
     sayi uzunluk = 0;
     eger (dt == D_DOSYA || dt == D_DIZIN) { uzunluk = fs_boyut(no); }
-    don sc_stat_tampon(mod, ino, g_fs[no].bag + 1, nlink, uzunluk, g_fs[no].zaman);
+    sayi t = sc_stat_tampon(mod, ino, g_fs[no].bag + 1, nlink, uzunluk, g_fs[no].zaman);
+    eger (dt == D_AYGIT) { upp.tampon.yaz64(t, 40, aygit_rdev(no)); }   // st_rdev
+    don t;
 }
 
 fonk sc_stat(sayi s, sayi dirfd, sayi yol_adr, sayi buf, sayi bayrak) -> sayi {
@@ -525,6 +533,15 @@ fonk sc_fstat(sayi s, sayi fd, sayi buf) -> sayi {
     eger (tur == FD_DOSYA || tur == FD_DIZIN || tur == FD_NULL || tur == FD_FB) {
         eger (g_fd_no[y] >= 0) { don sc_yapi_ver(s, buf, sc_dugum_stat(g_fd_no[y]), 144); }
     }
+    eger (tur == FD_OLAY) {
+        // girdi aygıtı: S_IFCHR | 0660, 13:64 + n (mice 13:63)
+        sayi ag = g_girdi[g_fd_no[y]].aygit;
+        sayi t = sc_stat_tampon(8192 + 432, 1, 1, 1, 0, simdi());
+        sayi kucuk = 64 + ag;
+        eger (ag == OLAY_MICE) { kucuk = 63; }
+        upp.tampon.yaz64(t, 40, 13 * 256 + kucuk);
+        don sc_yapi_ver(s, buf, t, 144);
+    }
     eger (tur == FD_GIRDI || fd_boru_mu(tur)) {
         // boru: S_IFIFO | 0600
         don sc_yapi_ver(s, buf, sc_stat_tampon(4096 + 384, 1, 1, 1, 0, simdi()), 144);
@@ -539,7 +556,7 @@ fonk sc_lseek(sayi s, sayi fd, sayi ofs, sayi nereden) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi y = fd_yer(s, fd);
     sayi tur = g_fd_tur[y];
-    eger (tur == FD_TERMINAL || tur == FD_GIRDI || fd_boru_mu(tur)) { don -ESPIPE; }
+    eger (tur == FD_TERMINAL || tur == FD_GIRDI || tur == FD_OLAY || fd_boru_mu(tur)) { don -ESPIPE; }
     eger (tur == FD_NULL || tur == FD_FB) { don 0; }
     sayi yeni = 0;
     eger (nereden == 0) {
@@ -783,7 +800,10 @@ fonk sc_brk(sayi s, sayi yeni) -> sayi {
 fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi tur = g_fd_tur[fd_yer(s, fd)];
+    eger (tur == FD_OLAY) { don sc_olay_ioctl(s, fd_yer(s, fd), istek, arg); }
     eger (tur == FD_TERMINAL) {
+        sayi k = sc_konsol_ioctl(s, istek & 0xFFFFFFFF, arg);
+        eger (k != IOCTL_YOK) { don k; }
         eger (istek == TIOCGWINSZ) {
             // struct winsize { ws_row, ws_col, ws_xpixel, ws_ypixel } (u16)
             sayi t = upp.tampon.yeni(8);

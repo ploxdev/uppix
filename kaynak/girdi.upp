@@ -1,0 +1,458 @@
+// Uppix — girdi aygıtları: 8042 denetleyicisi (atkbdc), AT klavye (atkbd), PS/2 fare
+// (psm), olay kuyrukları (Linux evdev ve mousedev) ve konsolun kipleri (KD_*, K_*, VT).
+// Donanım mekanizması çekirdekte: fare_kur/fare_komut/fare_oku (IRQ12 kuyruğu),
+// klavye_ham/klavye_ham_oku (küme 1 tarama kodları), ekran_grafik. Paket çözme, tarama
+// kodu → KEY_* çevirisi ve olayların dağıtımı burada.
+//
+// Her açılış (open) bir istemcidir; tanımlayıcı (dup, fork) istemciyi paylaşır. Baytlar
+// okuma anında toplanır (girdi_topla) ve o aygıtın bütün açık istemcilerine (EVIOCGRAB
+// ile kapan varsa yalnızca ona) dağıtılır. olay_hazir_mi engellemeyen sorgudur (poll).
+
+sabit sayi OLAY_KLAVYE = 0;  // /dev/input/event0
+sabit sayi OLAY_FARE = 1;    // /dev/input/event1
+sabit sayi OLAY_MICE = 2;    // /dev/input/mice (ImPS/2 öykünmesi)
+
+sabit sayi EV_SYN = 0;
+sabit sayi EV_KEY = 1;
+sabit sayi EV_REL = 2;
+sabit sayi REL_X = 0;
+sabit sayi REL_Y = 1;
+sabit sayi REL_WHEEL = 8;
+sabit sayi BTN_LEFT = 0x110;
+sabit sayi BTN_RIGHT = 0x111;
+sabit sayi BTN_MIDDLE = 0x112;
+sabit sayi KEY_PAUSE = 119;
+
+sabit sayi OLAY_KUYRUK_AZAMI = 4096;
+
+sinif GirdiIstemci {
+    sayi aygit;
+    sayi ref;
+    mantik etkin;
+    liste[sayi] kuyruk;
+    sayi bas;
+    sayi saat;
+    sayi kip;
+    mantik hiz_bekleniyor;
+    sayi hiz1;
+    sayi hiz2;
+}
+
+// kuyruk: evdev'de olay başına beş sayı (ms, tür, kod, değer, -), mousedev'de baytlar;
+// bas: okunmamış ilk öğe. saat: evdev zaman damgası (0 CLOCK_REALTIME, 1 MONOTONIC).
+// kip: mousedev paket biçimi (0 PS/2 3 bayt, 3 ImPS/2 4 bayt); hiz1/hiz2: son iki
+// örnekleme hızı (200, 100, 80 dizisi ImPS/2'ye geçirir).
+
+liste[GirdiIstemci] g_girdi;
+sayi g_kapan_klavye = -1;
+sayi g_kapan_fare = -1;
+
+fonk girdi_istemci_yeni(sayi aygit) -> sayi {
+    girdi_topla();
+    GirdiIstemci c;
+    c.aygit = aygit;
+    c.etkin = dogru;
+    her (sayi i in 0..g_girdi.uzunluk()) {
+        eger (!g_girdi[i].etkin) {
+            g_girdi.yaz(i, c);
+            don i;
+        }
+    }
+    g_girdi.ekle(c);
+    don g_girdi.uzunluk() - 1;
+}
+
+fonk girdi_istemci_al(sayi i) -> bos {
+    g_girdi[i].ref += 1;
+    eger (g_girdi[i].aygit == OLAY_KLAVYE) { klavye_kip_guncelle(); }
+}
+
+fonk girdi_istemci_birak(sayi i) -> bos {
+    g_girdi[i].ref -= 1;
+    eger (g_girdi[i].ref > 0) { don; }
+    g_girdi[i].etkin = yanlis;
+    g_girdi[i].kuyruk.temizle();
+    g_girdi[i].bas = 0;
+    eger (g_kapan_klavye == i) { g_kapan_klavye = -1; }
+    eger (g_kapan_fare == i) { g_kapan_fare = -1; }
+    eger (g_girdi[i].aygit == OLAY_KLAVYE) { klavye_kip_guncelle(); }
+}
+
+fonk olay_hazir_mi(sayi i) -> mantik {
+    girdi_topla();
+    don g_girdi[i].bas < g_girdi[i].kuyruk.uzunluk();
+}
+
+// Okunan öğeler kuyruğun başından düşer (arada bir sıkıştırılır).
+fonk girdi_kuyruk_tuket(sayi i, sayi n) -> bos {
+    g_girdi[i].bas += n;
+    eger (g_girdi[i].bas >= g_girdi[i].kuyruk.uzunluk()) {
+        g_girdi[i].kuyruk.temizle();
+        g_girdi[i].bas = 0;
+    } yoksa eger (g_girdi[i].bas > 1024) {
+        liste[sayi] kalan;
+        her (sayi k in g_girdi[i].bas..g_girdi[i].kuyruk.uzunluk()) { kalan.ekle(g_girdi[i].kuyruk[k]); }
+        g_girdi[i].kuyruk = kalan;
+        g_girdi[i].bas = 0;
+    }
+}
+
+// evdev olayı: aygıtın istemcilerine (kapan varsa yalnızca ona).
+fonk olay_ekle(sayi aygit, sayi tur, sayi kod, sayi deger) -> bos {
+    sayi kapan = g_kapan_klavye;
+    eger (aygit == OLAY_FARE) { kapan = g_kapan_fare; }
+    sayi ms = upp.zaman();
+    her (sayi i in 0..g_girdi.uzunluk()) {
+        eger (!g_girdi[i].etkin || g_girdi[i].aygit != aygit || (kapan >= 0 && kapan != i)) { devam; }
+        eger (g_girdi[i].kuyruk.uzunluk() - g_girdi[i].bas >= OLAY_KUYRUK_AZAMI * 5) { devam; }
+        g_girdi[i].kuyruk.ekle(ms);
+        g_girdi[i].kuyruk.ekle(tur);
+        g_girdi[i].kuyruk.ekle(kod);
+        g_girdi[i].kuyruk.ekle(deger);
+        g_girdi[i].kuyruk.ekle(0);
+    }
+}
+
+// ---------------------------------------------------------------- PS/2 fare (psm)
+
+mantik g_psm_var = yanlis;
+mantik g_psm_denendi = yanlis;
+sayi g_psm_kimlik = 0;
+sayi g_fare_boy = 3;
+sayi g_fare_tuslar = 0;
+liste[sayi] g_fare_paket;
+
+fonk fare_hiz(sayi hiz) -> mantik {
+    eger ((upp.cekirdek.fare_komut(0xF3, 0) & 0xFF) != 0xFA) { don yanlis; }
+    don (upp.cekirdek.fare_komut(hiz, 0) & 0xFF) == 0xFA;
+}
+
+// IntelliMouse algılama: örnekleme hızı 200, 100, 80 dizisinden sonra kimlik 3 ise
+// tekerlekli, 4 baytlık paket. Sonra hız 100, akış yeniden açılır.
+fonk psm_algila() -> bos {
+    eger (g_psm_denendi) { don; }
+    g_psm_denendi = dogru;
+    eger (!upp.cekirdek.fare_kur()) { don; }
+    upp.cekirdek.fare_komut(0xF5, 0);
+    fare_hiz(200);
+    fare_hiz(100);
+    fare_hiz(80);
+    sayi r = upp.cekirdek.fare_komut(0xF2, 1);
+    eger (r >= 0 && r % 256 == 0xFA) { g_psm_kimlik = (r / 256) % 256; }
+    eger (g_psm_kimlik == 3) { g_fare_boy = 4; }
+    fare_hiz(100);
+    upp.cekirdek.fare_komut(0xF4, 0);
+    // komutlar sırasında kuyruğa düşmüş baytlar atılır
+    iken (upp.cekirdek.fare_oku() >= 0) { }
+    g_psm_var = dogru;
+}
+
+fonk fare_adi() -> metin {
+    eger (g_psm_kimlik == 3) { don "ImPS/2 Generic Wheel Mouse"; }
+    don "PS/2 Generic Mouse";
+}
+
+// Paket: 0. bayt L/R/M tuşları (bit 0-2), daima 1 (bit 3), X/Y işaretleri (4-5),
+// taşmalar (6-7); 1-2: dx, dy (yukarı pozitif); 3: tekerlek (işaretli). Senkron
+// kaçarsa 3. biti 0 olan bayt paket başı sayılmaz.
+fonk psm_bayt(sayi b) -> bos {
+    eger (g_fare_paket.uzunluk() == 0 && (b & 8) == 0) { don; }
+    g_fare_paket.ekle(b);
+    eger (g_fare_paket.uzunluk() < g_fare_boy) { don; }
+    sayi b0 = g_fare_paket[0];
+    sayi dx = g_fare_paket[1];
+    sayi dy = g_fare_paket[2];
+    sayi dz = 0;
+    eger (g_fare_boy == 4) {
+        dz = g_fare_paket[3];
+        eger (dz >= 128) { dz -= 256; }
+    }
+    g_fare_paket.temizle();
+    eger ((b0 & 0x10) != 0) { dx -= 256; }
+    eger ((b0 & 0x20) != 0) { dy -= 256; }
+    eger ((b0 & 0x40) != 0) { dx = 0; }
+    eger ((b0 & 0x80) != 0) { dy = 0; }
+    sayi tuslar = b0 & 7;
+    // Linux psmouse sırası: tekerlek, BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, REL_X, REL_Y, SYN
+    mantik olay = yanlis;
+    eger (dz != 0) {
+        olay_ekle(OLAY_FARE, EV_REL, REL_WHEEL, -dz);
+        olay = dogru;
+    }
+    sayi degisen = tuslar ^ g_fare_tuslar;
+    eger ((degisen & 1) != 0) {
+        olay_ekle(OLAY_FARE, EV_KEY, BTN_LEFT, tuslar & 1);
+        olay = dogru;
+    }
+    eger ((degisen & 4) != 0) {
+        olay_ekle(OLAY_FARE, EV_KEY, BTN_MIDDLE, (tuslar / 4) & 1);
+        olay = dogru;
+    }
+    eger ((degisen & 2) != 0) {
+        olay_ekle(OLAY_FARE, EV_KEY, BTN_RIGHT, (tuslar / 2) & 1);
+        olay = dogru;
+    }
+    eger (dx != 0) {
+        olay_ekle(OLAY_FARE, EV_REL, REL_X, dx);
+        olay = dogru;
+    }
+    eger (dy != 0) {
+        olay_ekle(OLAY_FARE, EV_REL, REL_Y, -dy);
+        olay = dogru;
+    }
+    eger (olay) { olay_ekle(OLAY_FARE, EV_SYN, 0, 0); }
+    g_fare_tuslar = tuslar;
+    mice_paket(dx, dy, dz, tuslar);
+}
+
+// mousedev: büyük hareket -127..127'lik paketlere bölünür.
+fonk mice_paket(sayi dx, sayi dy, sayi dz, sayi tuslar) -> bos {
+    sayi x = dx;
+    sayi y = dy;
+    mantik ilk = dogru;
+    iken (ilk || x != 0 || y != 0) {
+        ilk = yanlis;
+        sayi px = upp.max(-127, upp.min(127, x));
+        sayi py = upp.max(-127, upp.min(127, y));
+        x -= px;
+        y -= py;
+        sayi b0 = 8 | tuslar;
+        eger (px < 0) { b0 = b0 | 0x10; }
+        eger (py < 0) { b0 = b0 | 0x20; }
+        her (sayi i in 0..g_girdi.uzunluk()) {
+            eger (!g_girdi[i].etkin || g_girdi[i].aygit != OLAY_MICE) { devam; }
+            eger (g_girdi[i].kuyruk.uzunluk() - g_girdi[i].bas >= OLAY_KUYRUK_AZAMI * 4) { devam; }
+            g_girdi[i].kuyruk.ekle(b0);
+            g_girdi[i].kuyruk.ekle(px & 0xFF);
+            g_girdi[i].kuyruk.ekle(py & 0xFF);
+            eger (g_girdi[i].kip == 3) { g_girdi[i].kuyruk.ekle(upp.max(-7, upp.min(7, dz)) & 0xFF); }
+        }
+        dz = 0;
+    }
+}
+
+// mousedev'e yazılan komut baytları: her birine 0xFA; 0xF2 kimlik (0 ya da 3),
+// 0xFF sıfırlama (FA AA 00, PS/2 kipi); 0xF3'ten sonraki bayt örnekleme hızıdır.
+fonk mice_komut(sayi i, sayi b) -> bos {
+    eger (g_girdi[i].hiz_bekleniyor) {
+        g_girdi[i].hiz_bekleniyor = yanlis;
+        eger (g_girdi[i].hiz1 == 200 && g_girdi[i].hiz2 == 100 && b == 80) { g_girdi[i].kip = 3; }
+        g_girdi[i].hiz1 = g_girdi[i].hiz2;
+        g_girdi[i].hiz2 = b;
+        g_girdi[i].kuyruk.ekle(0xFA);
+        don;
+    }
+    g_girdi[i].kuyruk.ekle(0xFA);
+    eger (b == 0xF3) { g_girdi[i].hiz_bekleniyor = dogru; }
+    eger (b == 0xF2) { g_girdi[i].kuyruk.ekle(g_girdi[i].kip); }
+    eger (b == 0xFF) {
+        g_girdi[i].kip = 0;
+        g_girdi[i].kuyruk.ekle(0xAA);
+        g_girdi[i].kuyruk.ekle(0);
+    }
+}
+
+// ---------------------------------------------------------------- AT klavye (atkbd)
+
+sayi g_kb_e0 = 0;
+sayi g_kb_e1 = 0;
+liste[mantik] g_tus_basili;
+
+// Küme 1 tarama kodu → Linux KEY_*. 0x01..0x58 aynı numaradır (KEY_ESC 1 ... KEY_F12 88).
+fonk tarama_kodu_tus(sayi sc, mantik e0) -> sayi {
+    eger (!e0) {
+        eger (sc == 0x54) { don 99; }                  // Alt+SysRq → KEY_SYSRQ
+        eger (sc >= 1 && sc <= 0x58 && sc != 0x55) { don sc; }
+        don 0;
+    }
+    secim (sc) {
+        durum 0x1C: don 96;    // KEY_KPENTER
+        durum 0x1D: don 97;    // KEY_RIGHTCTRL
+        durum 0x35: don 98;    // KEY_KPSLASH
+        durum 0x37: don 99;    // KEY_SYSRQ (Print Screen)
+        durum 0x38: don 100;   // KEY_RIGHTALT
+        durum 0x47: don 102;   // KEY_HOME
+        durum 0x48: don 103;   // KEY_UP
+        durum 0x49: don 104;   // KEY_PAGEUP
+        durum 0x4B: don 105;   // KEY_LEFT
+        durum 0x4D: don 106;   // KEY_RIGHT
+        durum 0x4F: don 107;   // KEY_END
+        durum 0x50: don 108;   // KEY_DOWN
+        durum 0x51: don 109;   // KEY_PAGEDOWN
+        durum 0x52: don 110;   // KEY_INSERT
+        durum 0x53: don 111;   // KEY_DELETE
+        durum 0x5B: don 125;   // KEY_LEFTMETA
+        durum 0x5C: don 126;   // KEY_RIGHTMETA
+        durum 0x5D: don 127;   // KEY_COMPOSE
+    }
+    // E0 2A / E0 36 (sahte Shift) ve bilinmeyenler
+    don 0;
+}
+
+// Tuş olayı: basılıyken gelen yeni basış tekrar (2); basılı olmayanın bırakılışı atılır.
+fonk tus_olay(sayi kod, mantik basildi) -> bos {
+    iken (g_tus_basili.uzunluk() <= kod) { g_tus_basili.ekle(yanlis); }
+    sayi deger = 0;
+    eger (basildi) {
+        deger = 1;
+        eger (g_tus_basili[kod]) { deger = 2; }
+    } yoksa eger (!g_tus_basili[kod]) {
+        don;
+    }
+    g_tus_basili[kod] = basildi;
+    olay_ekle(OLAY_KLAVYE, EV_KEY, kod, deger);
+    olay_ekle(OLAY_KLAVYE, EV_SYN, 0, 0);
+    // K_MEDIUMRAW: tuş kodu (bırakmada | 0x80); 127'den büyükse üç bayt
+    eger (g_kb_kip == K_MEDIUMRAW) {
+        sayi birak_bit = 0x80;
+        eger (basildi) { birak_bit = 0; }
+        eger (kod < 128) {
+            g_tty_ham.ekle(kod | birak_bit);
+        } yoksa {
+            g_tty_ham.ekle(birak_bit);
+            g_tty_ham.ekle((kod / 128) | 0x80);
+            g_tty_ham.ekle((kod % 128) | 0x80);
+        }
+    }
+}
+
+fonk klavye_bayt(sayi b) -> bos {
+    eger (g_kb_kip == K_RAW) { g_tty_ham.ekle(b); }
+    eger (g_kb_kip == K_OFF) { don; }
+    // Pause: E1 1D 45 E1 9D C5 (bırakma kodu yok): basış ve bırakma birlikte
+    eger (b == 0xE1) {
+        g_kb_e1 = 5;
+        don;
+    }
+    eger (g_kb_e1 > 0) {
+        g_kb_e1 -= 1;
+        eger (g_kb_e1 == 0) {
+            tus_olay(KEY_PAUSE, dogru);
+            tus_olay(KEY_PAUSE, yanlis);
+        }
+        don;
+    }
+    eger (b == 0xE0) {
+        g_kb_e0 = 1;
+        don;
+    }
+    sayi kod = tarama_kodu_tus(b & 0x7F, g_kb_e0 == 1);
+    g_kb_e0 = 0;
+    eger (kod > 0) { tus_olay(kod, b < 128); }
+}
+
+// Fare ve ham klavye kuyruklarındaki baytları çözüp dağıtır.
+fonk girdi_topla() -> bos {
+    eger (g_psm_var) {
+        sayi b = upp.cekirdek.fare_oku();
+        iken (b >= 0) {
+            psm_bayt(b);
+            b = upp.cekirdek.fare_oku();
+        }
+    }
+    eger (g_klavye_ham) {
+        sayi k = upp.cekirdek.klavye_ham_oku();
+        iken (k >= 0) {
+            klavye_bayt(k);
+            k = upp.cekirdek.klavye_ham_oku();
+        }
+    }
+}
+
+// ---------------------------------------------------------------- konsol kipleri
+
+sabit sayi KD_TEXT = 0;
+sabit sayi KD_GRAPHICS = 1;
+sabit sayi K_RAW = 0;
+sabit sayi K_XLATE = 1;
+sabit sayi K_MEDIUMRAW = 2;
+sabit sayi K_UNICODE = 3;
+sabit sayi K_OFF = 4;
+
+sayi g_kd_kip = 0;
+sayi g_kb_kip = 1;
+sayi g_vt_kip = 0;          // struct vt_mode'un ham 8 baytı (VT_AUTO: sıfır)
+sayi g_konsol_sahip = 0;    // kipleri değiştiren sürecin PID'i
+mantik g_klavye_ham = yanlis;
+liste[sayi] g_tty_ham;      // K_RAW / K_MEDIUMRAW'da terminalden okunacak baytlar
+
+// Ham kip: klavye olay aygıtı açıkken ya da terminal K_RAW/K_MEDIUMRAW/K_OFF iken.
+fonk klavye_kip_guncelle() -> bos {
+    mantik ham = g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE;
+    her (oto c in g_girdi) {
+        eger (c.etkin && c.aygit == OLAY_KLAVYE && c.ref > 0) { ham = dogru; }
+    }
+    eger (ham == g_klavye_ham) { don; }
+    // kapanırken kuyrukta kalanlar dağıtılır; açılırken eski tuş durumu silinir
+    eger (!ham) { girdi_topla(); }
+    g_klavye_ham = ham;
+    upp.cekirdek.klavye_ham(ham);
+    g_kb_e0 = 0;
+    g_kb_e1 = 0;
+    g_tus_basili.temizle();
+}
+
+fonk konsol_grafik_kip(sayi pid, sayi kip) -> bos {
+    g_kd_kip = kip;
+    g_konsol_sahip = pid;
+    upp.cekirdek.ekran_grafik(kip == KD_GRAPHICS);
+}
+
+fonk konsol_klavye_kip(sayi pid, sayi kip) -> bos {
+    g_kb_kip = kip;
+    g_konsol_sahip = pid;
+    g_tty_ham.temizle();
+    klavye_kip_guncelle();
+}
+
+// Kipleri değiştiren süreç bitince konsol metin kipine ve K_XLATE'e döner (yoksa ekran
+// ve klavye takılı kalır).
+fonk konsol_surec_bitti(sayi pid) -> bos {
+    eger (pid == 0 || g_konsol_sahip != pid) { don; }
+    g_konsol_sahip = 0;
+    g_vt_kip = 0;
+    eger (g_kd_kip != KD_TEXT) { konsol_grafik_kip(0, KD_TEXT); }
+    eger (g_kb_kip != K_XLATE) { konsol_klavye_kip(0, K_XLATE); }
+    g_konsol_sahip = 0;
+}
+
+// ---------------------------------------------------------------- sürücüler
+
+fonk atkbdc_yokla(sayi a) -> sayi {
+    aygit_aciklama_koy(a, "Klavye denetleyicisi (i8042)");
+    don YOKLA_GENEL;
+}
+
+fonk atkbdc_bagla(sayi a) -> sayi {
+    aygit_ekle(a, "atkbd", -1);
+    aygit_ekle(a, "psm", -1);
+    veriyolu_cocuklari_bagla(a);
+    don 0;
+}
+
+// Kökte tanıma: 8042 eski ISA aygıtıdır (ACPI yok).
+fonk atkbdc_tani(sayi ust) -> bos {
+    eger (aygit_bul("atkbdc0") < 0) { aygit_ekle(ust, "atkbdc", -1); }
+}
+
+fonk atkbd_yokla(sayi a) -> sayi {
+    aygit_aciklama_koy(a, "AT klavye");
+    don YOKLA_VARSAYILAN;
+}
+
+fonk psm_yokla(sayi a) -> sayi {
+    psm_algila();
+    eger (!g_psm_var) { don ENXIO; }
+    eger (g_psm_kimlik == 3) {
+        aygit_aciklama_koy(a, "PS/2 fare (IntelliMouse, kimlik 3)");
+    } yoksa {
+        aygit_aciklama_koy(a, "PS/2 fare (kimlik {g_psm_kimlik})");
+    }
+    don YOKLA_VARSAYILAN;
+}
+
+fonk girdi_kaydet() -> bos {
+    surucu_tanima_koy(surucu_kaydet("atkbdc", "nexus", atkbdc_yokla, atkbdc_bagla, veriyolu_genel_ayir), atkbdc_tani);
+    surucu_kaydet("atkbd", "atkbdc", atkbd_yokla, kopru_bagla, kopru_ayir);
+    surucu_kaydet("psm", "atkbdc", psm_yokla, kopru_bagla, kopru_ayir);
+}

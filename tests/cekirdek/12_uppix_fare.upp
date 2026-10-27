@@ -1,0 +1,75 @@
+// Çekirdek: Uppix girdi aygıtları ve grafik konsol. 8042 altında atkbd0 ve psm0
+// (IntelliMouse, 4 baytlık paket); /dev/input/event0 (klavye) ve event1 (fare) Linux
+// evdev, /dev/input/mice mousedev; /dev/tty0'da KD*/K*/VT* ioctl'ları. Olaylar QEMU
+// izleyicisinden gelir (--qemu-izleyici: Ctrl-A c ile izleyiciye geçilir ve dönülür);
+// programın "hazır" satırından sonra (@bekle) gönderilir.
+// - olaytest: ioctl'lar, okuma hataları, fare ve klavye olaylarının tür/kod/değer dizisi.
+// - fbfare: grafik kipte imleç; sol tuşla iz; izleyicide screendump ile pikseller
+//   denetlenir; q ile çıkar, metin kipine döner.
+// - fbfare --kipte-cik: KD_GRAPHICS ve K_RAW'da biten süreçten sonra konsol geri döner.
+// @gerek: cc python3 mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
+// @hazirla: rm -rf tests/_cikti/fare_img && rm -f /tmp/upp_fbfare.ppm
+// @bayrak: --onyukleyici limine --qemu-izleyici --disk tests/_cikti/fare_img/uppix.img --disk-hazirla disk_yap.sh
+// @girdi: devinfo
+// @girdi: ls /dev/input | tr '\n' ' '; echo
+// @girdi: olaytest
+// @bekle: olaytest: hazır
+// @girdi_kacis: \x01cmouse_move 10 -5
+// @girdi: mouse_button 1
+// @girdi: mouse_button 0
+// @girdi: sendkey a
+// @bekle: === olaytest bitti ===
+// @girdi_kacis: \x01c
+// @girdi: fbfare
+// @bekle: fbfare: hazır
+// @girdi_kacis: \x01cmouse_move 20 10
+// @girdi: mouse_button 1
+// @girdi: mouse_move 30 0
+// @girdi: mouse_button 0
+// @bekle: fbfare: bırakıldı
+// @girdi: screendump /tmp/upp_fbfare.ppm
+// @girdi: sendkey q
+// @bekle: fbfare: bitti
+// @girdi_kacis: \x01c
+// @girdi: olaytest --kip
+// @girdi: fbfare --kipte-cik; olaytest --kip
+// @girdi: poweroff
+// @icerir: psm0: <PS/2 fare (IntelliMouse, kimlik 3)> atkbdc0 üzerinde
+// @icerir:   atkbdc0
+// @icerir:     atkbd0
+// @icerir:     psm0
+// @icerir: event0 event1 mice
+// @icerir: klavye: sürüm 0x10001 kimlik 0x11:0x1:0x1:0xab41 ad "AT Translated Set 2 keyboard" (29)
+// @icerir: klavye: olay türleri 0x3 (4) EV_KEY 96 KEY_A 1 KEY_Q 1 BTN_LEFT 0 EV_REL 2 REL_X 0 REL_WHEEL 0
+// @icerir: fare: sürüm 0x10001 kimlik 0x11:0x2:0x3:0x0 ad "ImPS/2 Generic Wheel Mouse" (27)
+// @icerir: fare: olay türleri 0x7 (4) EV_KEY 96 KEY_A 0 KEY_Q 0 BTN_LEFT 1 EV_REL 2 REL_X 1 REL_WHEEL 1
+// @icerir: kısa tampon: -22
+// @icerir: boş kuyruk: -11
+// @icerir: EVIOCGRAB: 0
+// @icerir: EVIOCGRAB ikinci: -16
+// @icerir: EVIOCGRAB bırak: 0
+// @icerir: EVIOCGRAB sahibi değil: -22
+// @icerir: KDGETMODE: 0
+// @icerir: KDGKBMODE: 1
+// @icerir: KDSETMODE geçersiz: -22
+// @icerir: VT etkin: 1
+// @icerir: bilinmeyen ioctl: -22
+// @icerir: fare: tür 2 kod 0 değer 10
+// @icerir: fare: tür 2 kod 1 değer -5
+// @icerir: fare: tür 1 kod 272 değer 1
+// @icerir: fare: tür 1 kod 272 değer 0
+// @icerir: klavye: tür 1 kod 30 değer 1
+// @icerir: klavye: tür 1 kod 30 değer 0
+// @icerir: fbfare: bitti x=690 y=410 tıklama=1
+// @icerir: fbfare: kip değiştirildi, geri alınmadan çıkılıyor
+// @icerir: konsol: KDGETMODE 0 KDGKBMODE 1
+// @icerir: Sistem kapatılıyor...
+// @denetle: python3 -c "d=open('/tmp/upp_fbfare.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); assert o(675,410)==(255,200,0), o(675,410); assert o(691,412)==(255,255,255), o(691,412); assert o(690,410)==(0,0,0), o(690,410); assert o(100,100)[2]>o(100,100)[0], o(100,100); print('piksel tamam')"
+// @denetle: rm -f /tmp/upp_fbfare.ppm
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}

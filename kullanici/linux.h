@@ -108,6 +108,35 @@ typedef long ssize_t;
 #define TIOCGWINSZ 0x5413
 #define FBIOGET_VSCREENINFO 0x4600
 #define FBIOGET_FSCREENINFO 0x4602
+#define KDSETMODE 0x4B3A
+#define KDGETMODE 0x4B3B
+#define KDGKBMODE 0x4B44
+#define KDSKBMODE 0x4B45
+#define KD_TEXT 0
+#define KD_GRAPHICS 1
+#define K_RAW 0
+#define K_XLATE 1
+#define K_MEDIUMRAW 2
+#define VT_GETSTATE 0x5603
+
+/* evdev */
+#define EV_SYN 0
+#define EV_KEY 1
+#define EV_REL 2
+#define REL_X 0
+#define REL_Y 1
+#define REL_WHEEL 8
+#define BTN_LEFT 0x110
+#define BTN_RIGHT 0x111
+#define KEY_ESC 1
+#define KEY_Q 16
+#define KEY_A 30
+#define EVIOC(yon, nr, boy) ((unsigned long)(((unsigned long)(yon) << 30) | ((unsigned long)(boy) << 16) | (0x45UL << 8) | (nr)))
+#define EVIOCGVERSION EVIOC(2, 0x01, 4)
+#define EVIOCGID EVIOC(2, 0x02, 8)
+#define EVIOCGNAME(n) EVIOC(2, 0x06, (n))
+#define EVIOCGBIT(ev, n) EVIOC(2, 0x20 + (ev), (n))
+#define EVIOCGRAB EVIOC(1, 0x90, 4)
 
 #define S_IFMT 0170000
 #define S_IFDIR 0040000
@@ -149,6 +178,16 @@ struct rlimit {
 
 struct timeval {
     long tv_sec, tv_usec;
+};
+
+struct input_event {
+    struct timeval time;
+    unsigned short type, code;
+    int value;
+};
+
+struct input_id {
+    unsigned short bustype, vendor, product, version;
 };
 
 struct winsize {
@@ -208,6 +247,7 @@ static inline void* sys_mmap(void* a, size_t n, int p, int f, int fd, long o) {
 static inline long sys_munmap(void* a, size_t n) { return sc2(SYS_munmap, a, n); }
 static inline long sys_brk(void* a) { return sc1(SYS_brk, a); }
 static inline long sys_ioctl(int fd, unsigned long r, void* a) { return sc3(SYS_ioctl, fd, r, a); }
+static inline long sys_ioctl_deger(int fd, unsigned long r, long v) { return sc3(SYS_ioctl, fd, r, v); }
 static inline long sys_nanosleep(const struct timespec* t, struct timespec* k) { return sc2(SYS_nanosleep, t, k); }
 static inline void sys_exit(int k) {
     for (;;) sc1(SYS_exit, k);

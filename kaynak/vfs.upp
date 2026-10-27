@@ -729,7 +729,14 @@ fonk fs_sanal_kur() -> bos {
     fs_aygit(dev, "null", "null");
     fs_aygit(dev, "console", "konsol");
     fs_aygit(dev, "tty", "konsol");
+    g_fs[fs_aygit(dev, "tty0", "konsol")].kip = 400;
+    g_fs[fs_aygit(dev, "tty1", "konsol")].kip = 400;
     fs_aygit(dev, "random", "rastgele");
+    // girdi aygıtları (Linux evdev ve mousedev)
+    sayi girdi = fs_dugum_ekle(dev, "input", D_DIZIN, 493);
+    g_fs[fs_aygit(girdi, "event0", "olay0")].kip = 432;
+    g_fs[fs_aygit(girdi, "event1", "olay1")].kip = 432;
+    g_fs[fs_aygit(girdi, "mice", "fare_ps2")].kip = 432;
     eger (upp.cekirdek.ekran_bilgi(1) > 0) {
         sayi fb = fs_aygit(dev, "fb0", "fb");
         g_fs[fb].kip = 432;
