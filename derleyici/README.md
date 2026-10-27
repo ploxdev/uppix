@@ -4,7 +4,7 @@
 bootstrap'ıdır (`bootstrap/uppc.c`). Çekirdek hedefi (`--hedef cekirdek`) ve serbest
 çalışma zamanı derleyiciye gömülüdür; Uppix'i derlemek için başka bir şey gerekmez.
 
-Kaynak: `ploxdev/upp-lang`, beta dalı, `94efcb9` commit'i (`bootstrap/uppc.c`; içerdiği `src/runtime/upp_runtime.c` bu dosyaya gömüldü).
+Kaynak: `ploxdev/upp-lang`, beta dalı, `ae3d065` commit'i (`bootstrap/uppc.c`; içerdiği `src/runtime/upp_runtime.c` bu dosyaya gömüldü).
 Derleyici geliştirmesi U++ deposunda yapılır; yeni bir sürüm gerektiğinde bu dosya
 U++'ın `bootstrap/uppc.c` dosyasıyla değiştirilir.
 
