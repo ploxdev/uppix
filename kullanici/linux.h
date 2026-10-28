@@ -109,6 +109,23 @@ typedef long ssize_t;
 #define SYS_epoll_create1 291
 #define SYS_prlimit64 302
 #define SYS_getrandom 318
+#define SYS_link 86
+#define SYS_chmod 90
+#define SYS_fchmod 91
+#define SYS_chown 92
+#define SYS_fchown 93
+#define SYS_getuid 102
+#define SYS_setuid 105
+#define SYS_setgid 106
+#define SYS_setpgid 109
+#define SYS_setsid 112
+#define SYS_setresuid 117
+#define SYS_getresuid 118
+#define SYS_getpgid 121
+#define SYS_getsid 124
+#define SYS_linkat 265
+#define SYS_fchmodat 268
+#define FIONBIO 0x5421
 
 #define O_RDONLY 0
 #define O_WRONLY 1

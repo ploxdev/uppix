@@ -4,6 +4,8 @@
 !onyukleyici/limine/limine.c
 !kullanici/*.c
 !kullanici/glibc/*.c
+!kullanici/x11/*.c
+!ui/yama/*/*.c
 *.o
 *.obj
 *.exe

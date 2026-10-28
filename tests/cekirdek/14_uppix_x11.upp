@@ -1,0 +1,67 @@
+// Çekirdek: Uppix'te grafik arayüz. ui/derle.sh'in musl ile statik derlediği Xfbdev (X.Org
+// kdrive: /dev/fb0, evdev klavye ve fare, xkbcomp /bin/sh → ush ile çağrılır) ve JWM disk
+// imajına konur; startx X'i başlatır, soket hazır olunca JWM'yi çalıştırır. JWM açılışını
+// bitirince (tepsi, masaüstü arka planı) system.jwmrc'deki StartupCommand "jwm: masaüstü
+// hazır" yazar. xdeneme (libX11) ortada 400x300 yeşil pencere ve içinde kırmızı dikdörtgen
+// çizer; QEMU izleyicisinden gelen tuş ve fare olaylarını yazar. jwm -exit ile oturum biter,
+// startx X'i durdurur; konsol metin kipine döner. İkinci startx, öncekinden kalan kilit
+// dosyası ve soketle açılır (X sinyalle bittiğinden temizlik yapmaz) ve istemciye yanıt verir.
+// Denetim: izleyicinin screendump'larında pencere, dikdörtgen, masaüstü (#204060) ve alttaki
+// JWM tepsisi (#1E3A5F) pikselleri; X kapandıktan sonra ekranda X renkleri kalmamış, metin
+// görünüyor olmalı; ext4 kök e2fsck ile temiz çıkmalı.
+// ui/derle.sh ilk kez kaynakları indirip derler (uzun sürer); sonra önbellekten hemen biter.
+// @gerek: cc make python3 curl xz bzip2 mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
+// @hazirla: sh ui/derle.sh > /tmp/upp_ui_derle.log 2>&1 || { tail -n 20 /tmp/upp_ui_derle.log; false; }
+// @hazirla: rm -rf tests/_cikti/x11_img && rm -f /tmp/upp_x11_1.ppm /tmp/upp_x11_2.ppm /tmp/upp_x11_3.ppm
+// @bayrak: --onyukleyici limine --qemu-izleyici --disk tests/_cikti/x11_img/uppix.img --disk-hazirla disk_yap.sh
+// @girdi: ls /usr/bin/Xfbdev /usr/bin/jwm /usr/bin/xkbcomp /usr/bin/xdeneme /usr/bin/ush /usr/bin/startx
+// @girdi: startx &
+// @bekle: jwm: masaüstü hazır
+// @girdi: export DISPLAY=:0
+// @girdi: xdeneme
+// @bekle: xdeneme: hazır
+// @girdi_kacis: \x01cscreendump /tmp/upp_x11_1.ppm
+// @girdi: sendkey a
+// @girdi: mouse_move 20 10
+// @girdi: mouse_button 1
+// @girdi: mouse_button 0
+// @bekle: xdeneme: bitti
+// @girdi: screendump /tmp/upp_x11_2.ppm
+// @girdi_kacis: \x01c
+// @girdi: jwm -exit
+// @bekle: startx: oturum bitti
+// @girdi: startx /usr/bin/ush -c "jwm -exit && echo ikinci oturum: X yanıt verdi"; echo "ikinci startx kod=$?"
+// @bekle: ikinci startx kod=
+// @girdi: olaytest --kip
+// @bekle: konsol: KDGETMODE
+// @girdi: echo "metin kipi geri geldi"
+// @bekle: metin kipi geri geldi
+// @girdi_kacis: \x01cscreendump /tmp/upp_x11_3.ppm
+// @girdi_kacis: \x01c
+// @girdi: poweroff
+// @icerir: /usr/bin/startx
+// @icerir: startx: X hazır (:0)
+// @icerir: jwm: masaüstü hazır
+// @icerir: xdeneme: ekran 1280x800 derinlik 24
+// @icerir: xdeneme: pencere eşlendi
+// @icerir: xdeneme: tuş a
+// @icerir: xdeneme: fare tuşu 1
+// @icerir: xdeneme: bitti
+// @icerir: startx: oturum bitti
+// @icerir: ikinci oturum: X yanıt verdi
+// @icerir: ikinci startx kod=0
+// @icerir: konsol: KDGETMODE 0 KDGKBMODE 1
+// @icerir: metin kipi geri geldi
+// @icerir: Sistem kapatılıyor...
+// @denetle: python3 -c "d=open('/tmp/upp_x11_1.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(500,320,(220,0,0)),(585,375,(220,0,0)),(445,255,(0,160,0)),(835,545,(0,160,0)),(700,320,(0,160,0)),(100,100,(32,64,96)),(1200,700,(32,64,96)),(435,400,(32,64,96)),(900,790,(30,58,95)),(200,798,(30,58,95)),(900,770,(32,64,96))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; print('pencere ve tepsi tamam')"
+// @denetle: python3 -c "d=open('/tmp/upp_x11_2.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(500,320,(32,64,96)),(445,255,(32,64,96)),(835,545,(32,64,96)),(900,790,(30,58,95))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; print('pencere kapandı')"
+// @denetle: python3 -c "d=open('/tmp/upp_x11_3.ppm','rb').read(); p=d.split(b'\n',3); q=p[3]; r=set(tuple(q[i:i+3]) for i in range(0,len(q),3)); assert not r & {(32,64,96),(30,58,95),(0,160,0),(220,0,0)}, r; assert len(r) > 1, r; print('metin kipi tamam')"
+// @denetle: rm -f /tmp/upp_x11_1.ppm /tmp/upp_x11_2.ppm /tmp/upp_x11_3.ppm
+// @denetle: dd if=tests/_cikti/x11_img/uppix.img of=/tmp/upp_x11_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_x11_p2.img && rm -f /tmp/upp_x11_p2.img
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}

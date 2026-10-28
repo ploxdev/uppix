@@ -22,6 +22,7 @@ sabit sayi VT_GETSTATE = 0x5603;
 sabit sayi VT_RELDISP = 0x5605;
 sabit sayi VT_ACTIVATE = 0x5606;
 sabit sayi VT_WAITACTIVE = 0x5607;
+sabit sayi VT_DISALLOCATE = 0x5608;
 sabit sayi IOCTL_YOK = -1000000;
 
 fonk olay_aygiti(metin a) -> sayi {
@@ -346,6 +347,6 @@ fonk sc_konsol_ioctl(sayi s, sayi istek, sayi arg) -> sayi {
         eger (arg != 1) { don -ENXIO; }
         don 0;
     }
-    eger (istek == VT_RELDISP) { don 0; }
+    eger (istek == VT_RELDISP || istek == VT_DISALLOCATE) { don 0; }
     don IOCTL_YOK;
 }

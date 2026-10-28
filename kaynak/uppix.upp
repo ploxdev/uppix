@@ -173,6 +173,8 @@ fonk etc_kur() -> bos {
     beni += "  ps\n";
     beni += "  sh /usr/share/ornekler/selam.sh Dünya\n";
     etc_dosya("/root/beni_oku.txt", beni, 420);
+    // X sunucusunun soket dizini (tmpfs; her açılışta, yapışkan bit ile 1777)
+    fs_dizin("/tmp/.X11-unix", 1023);
     fs_dizin("/usr/share/ornekler", 493);
     metin betik = "#!/bin/sh\n";
     betik += "# Örnek betik: konum parametreleri ve koşullar\n";

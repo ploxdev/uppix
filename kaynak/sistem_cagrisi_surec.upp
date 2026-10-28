@@ -328,6 +328,19 @@ fonk sc_tkill(sayi s, sayi tgid, sayi tid, sayi sig) -> sayi {
     don sc_kill(s, tid, sig);
 }
 
+// setpgid: kendisi ya da çocuğu; pgid 0 hedefin PID'idir.
+fonk sc_setpgid(sayi s, sayi pid, sayi pgid) -> sayi {
+    eger (pgid < 0) { don -EINVAL; }
+    sayi t = s;
+    eger (pid != 0 && pid != g_surec[s].pid) {
+        t = surec_bul(pid);
+        eger (t < 0 || g_surec[t].ebeveyn != g_surec[s].pid) { don -ESRCH; }
+    }
+    eger (pgid == 0) { pgid = g_surec[t].pid; }
+    g_surec[t].pgid = pgid;
+    don 0;
+}
+
 fonk sc_getpgid(sayi s, sayi pid) -> sayi {
     eger (pid == 0) { don g_surec[s].pgid; }
     eger (pid < 0) { don -ESRCH; }
@@ -491,7 +504,15 @@ fonk surec_yurut(sayi s, sayi no, metin dosya, liste[metin] arg, liste[metin] or
     eger (upp.metin.baslar(veri, "#!")) {
         eger (derinlik >= 4) { don -ELOOP; }
         metin satir_m = betik_satiri(veri);
-        // /bin altındaki yerleşik komutlar çekirdekte çalışır, süreç görüntüsü değildir
+        // /bin/sh çekirdekteki kabuktur (uppsh): süreçler (system, popen, X'in xkbcomp'u)
+        // için kullanıcı kipindeki küçük kabuk /usr/bin/ush çalışır, argv aynen geçer
+        eger (satir_m == "/yerlesik/sh" && fs_coz("/usr/bin/ush") >= 0) {
+            sayi ush = fs_coz("/usr/bin/ush");
+            sayi uh = yurut_dosya_denetle(ush);
+            eger (uh < 0) { don uh; }
+            don surec_yurut(s, ush, "/usr/bin/ush", arg, ortam, derinlik + 1, ilk);
+        }
+        // /bin altındaki öteki yerleşik komutlar çekirdekte çalışır, süreç görüntüsü değildir
         eger (satir_m == "" || upp.metin.baslar(satir_m, "/yerlesik/")) { don -ENOEXEC; }
         metin yorumlayici = satir_m;
         metin ek = "";

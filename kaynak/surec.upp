@@ -182,6 +182,7 @@ fonk fd_nesne_birak(sayi tur, sayi no) -> bos {
 // Tanımlayıcı yuvasını yazar; eski nesnenin sayacı düşer, yeninin artar (önce artar:
 // aynı nesneye yeniden atamada sayaç sıfıra inip nesne bitmesin).
 fonk fd_ata(sayi y, sayi tur, sayi no, sayi konum, sayi bayrak) -> bos {
+    eger (g_fd_tur[y] != FD_KAPALI && (g_fd_tur[y] != tur || g_fd_no[y] != no)) { epoll_fd_dus(y / FD_MAX, y % FD_MAX); }
     fd_nesne_al(tur, no);
     fd_nesne_birak(g_fd_tur[y], g_fd_no[y]);
     g_fd_tur.yaz(y, tur);

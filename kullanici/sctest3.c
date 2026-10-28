@@ -371,6 +371,41 @@ int main(int argc, char** argv, char** envp) {
         satir("execve E2BIG", sys_execve(kendi, b, envp));
     }
 
+    /* oturum ve süreç grubu (çocukta: çağıran grup lideri değildir) */
+    c = sys_fork();
+    if (c == 0) {
+        long ben = sc0(SYS_getpid);
+        satir("setsid", sc0(SYS_setsid) == ben);
+        satir("setsid lider", sc0(SYS_setsid));
+        satir("getsid", sc1(SYS_getsid, 0) == ben);
+        satir("getpgid", sc1(SYS_getpgid, 0) == ben);
+        sys_exit(0);
+    }
+    sys_wait4(c, &st, 0);
+    durum("setsid çocuğu", st);
+    c = sys_fork();
+    if (c == 0) {
+        long ben = sc0(SYS_getpid);
+        satir("setpgid", sc2(SYS_setpgid, 0, 0));
+        satir("getpgrp yeni", sc0(SYS_getpgrp) == ben);
+        satir("setpgid negatif", sc2(SYS_setpgid, 0, -1));
+        satir("setpgid çocuk değil", sc2(SYS_setpgid, 1, 0));
+        sys_exit(0);
+    }
+    sys_wait4(c, &st, 0);
+    durum("setpgid çocuğu", st);
+
+    /* kimlik: yalnızca kendi kimliğine kurmak (Linux'taki karşılaştırma root olmadan koşar) */
+    {
+        unsigned int k[3];
+        long u = sc0(SYS_getuid);
+        satir("setuid kendisi", sc1(SYS_setuid, u));
+        satir("setresuid değişmeden", sc3(SYS_setresuid, -1, -1, -1));
+        satir("getresuid", sc3(SYS_getresuid, k, k + 1, k + 2));
+        satir("getresuid aynı", k[0] == u && k[1] == u && k[2] == u);
+        satir("getresuid EFAULT", sc3(SYS_getresuid, 1, k + 1, k + 2));
+    }
+
     sc1(SYS_unlink, D "/betik");
     sc1(SYS_unlink, D "/izinsiz");
     sc1(SYS_unlink, D "/bozuk");

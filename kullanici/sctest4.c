@@ -482,6 +482,24 @@ int main(int argc, char** argv, char** envp) {
         sys_close(p[0]);
         sys_close(p[1]);
         satir("kapananlar düştü", sc4(SYS_epoll_wait, ep, (long)ev, 4, 0));
+        /* kapanan tanımlayıcının kaydı kalkar: aynı numara yeni bir nesneye verilince yeniden
+           eklenebilir (X sunucusu kapattığı istemcinin numarasını yeni bağlantıya verir) */
+        sc4(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, (long)sv);
+        e.events = EPOLLIN | EPOLLET;
+        e.data = 30;
+        sc4(SYS_epoll_ctl, ep, EPOLL_CTL_ADD, sv[1], (long)&e);
+        sys_close(sv[1]);
+        satir("kapanmış DEL", sc4(SYS_epoll_ctl, ep, EPOLL_CTL_DEL, sv[1], 0));
+        sys_close(sv[0]);
+        sc4(SYS_socketpair, AF_UNIX, SOCK_STREAM, 0, (long)p);
+        satir("aynı numara", p[1] == sv[1] || p[0] == sv[1]);
+        sys_write(p[0], "z", 1);
+        e.data = 31;
+        satir("yeniden ADD", sc4(SYS_epoll_ctl, ep, EPOLL_CTL_ADD, sv[1], (long)&e));
+        r = sc4(SYS_epoll_wait, ep, (long)ev, 4, 1000);
+        satir("ET hazır veri", r == 1 && ev[0].data == 31);
+        sys_close(p[0]);
+        sys_close(p[1]);
         sys_close((int)ep);
     }
 

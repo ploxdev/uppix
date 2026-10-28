@@ -369,6 +369,48 @@ int main(int argc, char** argv, char** envp) {
         sc1(SYS_unlink, "sct2_mm.bin");
     }
 
+    /* link / linkat, chmod / fchmod / fchmodat, chown, FIONBIO (sabit bağlantının iki adının
+       aynı inode'u paylaşması denenmez: Uppix'te yeni ad bir kopyadır) */
+    {
+        char b[8];
+        int p[2], bir = 1;
+        long lf = sc3(SYS_open, "sct2_ln_a", O_CREAT | O_TRUNC | O_RDWR, 0644);
+        sc3(SYS_write, lf, "bag", 3);
+        satir("link", sc2(SYS_link, "sct2_ln_a", "sct2_ln_b"));
+        r = sc3(SYS_open, "sct2_ln_b", O_RDONLY, 0);
+        memset(b, 0, sizeof(b));
+        sc3(SYS_read, r, b, sizeof(b));
+        sc1(SYS_close, r);
+        metin_satir("link içerik", b, 3);
+        satir("link var", sc2(SYS_link, "sct2_ln_a", "sct2_ln_b"));
+        satir("link yok", sc2(SYS_link, "sct2_ln_yok", "sct2_ln_c"));
+        satir("link dizin", sc2(SYS_link, ".", "sct2_ln_c"));
+        satir("link üst yok", sc2(SYS_link, "sct2_ln_a", "sct2_yok/c"));
+        satir("linkat bayrak", sc6(SYS_linkat, AT_FDCWD, (long)"sct2_ln_a", AT_FDCWD, (long)"sct2_ln_c", 1, 0));
+        satir("chmod", sc2(SYS_chmod, "sct2_ln_a", 0600));
+        satir("chmod kip", (sc2(SYS_stat, "sct2_ln_a", &st), (long)(st.st_mode & 07777)));
+        satir("fchmod", sc2(SYS_fchmod, lf, 0640));
+        satir("fchmod kip", (sys_fstat((int)lf, &st), (long)(st.st_mode & 07777)));
+        satir("fchmodat", sc3(SYS_fchmodat, AT_FDCWD, "sct2_ln_b", 0604));
+        satir("fchmodat kip", (sc2(SYS_stat, "sct2_ln_b", &st), (long)(st.st_mode & 07777)));
+        satir("chmod yok", sc2(SYS_chmod, "sct2_ln_yok", 0600));
+        satir("chown değişmeden", sc3(SYS_chown, "sct2_ln_a", -1, -1));
+        satir("fchown değişmeden", sc3(SYS_fchown, lf, -1, -1));
+        satir("chown yok", sc3(SYS_chown, "sct2_ln_yok", -1, -1));
+        sc1(SYS_close, lf);
+        sc1(SYS_unlink, "sct2_ln_a");
+        sc1(SYS_unlink, "sct2_ln_b");
+        sc1(SYS_pipe, p);
+        satir("FIONBIO", sc3(SYS_ioctl, p[0], FIONBIO, &bir));
+        satir("FIONBIO bayrak", (sc3(SYS_fcntl, p[0], 3, 0) & O_NONBLOCK) != 0);
+        satir("FIONBIO okuma", sc3(SYS_read, p[0], b, 1));
+        bir = 0;
+        satir("FIONBIO kapat", sc3(SYS_ioctl, p[0], FIONBIO, &bir));
+        satir("FIONBIO bayrak kapalı", (sc3(SYS_fcntl, p[0], 3, 0) & O_NONBLOCK) != 0);
+        sc1(SYS_close, p[0]);
+        sc1(SYS_close, p[1]);
+    }
+
     /* futex */
     {
         int f = 5;

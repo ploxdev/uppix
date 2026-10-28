@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+# Uppix grafik arayüzü derlemesi için küçük bir pkg-config yerine-koyucusu.
+# Yalnızca X.Org paketlerinin configure betiklerinin kullandığı seçenekler:
+# --version, --atleast-pkgconfig-version, --exists, --atleast-version, --exact-version,
+# --max-version, --modversion, --cflags(-only-I), --libs(-only-l/-L), --static,
+# --variable, --print-errors, --short-errors, --errors-to-stdout, --print-requires.
+# .pc dosyaları PKG_CONFIG_LIBDIR / PKG_CONFIG_PATH dizinlerinde aranır;
+# PKG_CONFIG_SYSROOT_DIR, -I/-L yollarına ve mutlak yol değişkenlerine eklenir.
+import os
+import re
+import sys
+
+
+def surum_karsilastir(a, b):
+    def parca(s):
+        return [int(x) if x.isdigit() else x for x in re.findall(r"\d+|[a-zA-Z]+", s)]
+    pa, pb = parca(a), parca(b)
+    for x, y in zip(pa, pb):
+        if x == y:
+            continue
+        if isinstance(x, int) and isinstance(y, int):
+            return -1 if x < y else 1
+        return -1 if str(x) < str(y) else 1
+    return (len(pa) > len(pb)) - (len(pa) < len(pb))
+
+
+def dizinler():
+    d = []
+    for ad in ("PKG_CONFIG_PATH", "PKG_CONFIG_LIBDIR"):
+        d += [x for x in os.environ.get(ad, "").split(":") if x]
+    return d
+
+
+SYSROOT = os.environ.get("PKG_CONFIG_SYSROOT_DIR", "")
+_onbellek = {}
+
+
+def pc_oku(ad):
+    if ad in _onbellek:
+        return _onbellek[ad]
+    yol = None
+    for d in dizinler():
+        p = os.path.join(d, ad + ".pc")
+        if os.path.exists(p):
+            yol = p
+            break
+    if yol is None:
+        _onbellek[ad] = None
+        return None
+    degisken = {"pcfiledir": os.path.dirname(yol)}
+    alan = {}
+
+    def ac(s):
+        return re.sub(r"\$\{([A-Za-z0-9_.]+)\}", lambda m: degisken.get(m.group(1), ""), s)
+
+    for satir in open(yol, encoding="utf-8", errors="replace"):
+        satir = satir.split("#", 1)[0].strip()
+        if not satir:
+            continue
+        m = re.match(r"^([A-Za-z0-9_.]+)\s*=\s*(.*)$", satir)
+        if m and ":" not in satir.split("=", 1)[0]:
+            degisken[m.group(1)] = ac(m.group(2))
+            continue
+        m = re.match(r"^([A-Za-z0-9_.]+)\s*:\s*(.*)$", satir)
+        if m:
+            alan[m.group(1)] = ac(m.group(2))
+    sonuc = {"degisken": degisken, "alan": alan}
+    _onbellek[ad] = sonuc
+    return sonuc
+
+
+def gereksinimler(metin):
+    # "a >= 1.0, b c" → [(a, >=, 1.0), (b, None, None), (c, None, None)]
+    parcalar = metin.replace(",", " ").split()
+    sonuc = []
+    i = 0
+    while i < len(parcalar):
+        ad = parcalar[i]
+        if i + 2 < len(parcalar) + 0 and i + 1 < len(parcalar) and parcalar[i + 1] in ("<", "<=", "=", "!=", ">=", ">"):
+            sonuc.append((ad, parcalar[i + 1], parcalar[i + 2] if i + 2 < len(parcalar) else ""))
+            i += 3
+        else:
+            sonuc.append((ad, None, None))
+            i += 1
+    return sonuc
+
+
+def uyar(surum, op, istenen):
+    if op is None:
+        return True
+    c = surum_karsilastir(surum, istenen)
+    return {"<": c < 0, "<=": c <= 0, "=": c == 0, "!=": c != 0, ">=": c >= 0, ">": c > 0}[op]
+
+
+def kok_ekle(bayraklar):
+    if not SYSROOT:
+        return bayraklar
+    sonuc = []
+    for b in bayraklar:
+        for on in ("-I", "-L"):
+            if b.startswith(on + "/") and not b.startswith(on + SYSROOT):
+                b = on + SYSROOT + b[len(on):]
+        sonuc.append(b)
+    return sonuc
+
+
+def topla(adlar, alan_adi, statik, yigin):
+    # Bir modül birden çok kez gerekebilir: bayrakları her seferinde eklenir, tekillestir
+    # -l'lerin son görüneni bırakır (statik bağlamada bağımlılık, bağımlıdan sonra gelir).
+    # yigin yalnızca döngüyü önler.
+    bayrak = []
+    for ad in adlar:
+        if ad in yigin:
+            continue
+        pc = pc_oku(ad)
+        if pc is None:
+            continue
+        bayrak += pc["alan"].get(alan_adi, "").split()
+        if alan_adi == "Libs" and statik:
+            bayrak += pc["alan"].get("Libs.private", "").split()
+        alt = [g[0] for g in gereksinimler(pc["alan"].get("Requires", ""))]
+        if statik or alan_adi == "Cflags":
+            alt += [g[0] for g in gereksinimler(pc["alan"].get("Requires.private", ""))]
+        bayrak += topla(alt, alan_adi, statik, yigin | {ad})
+    return bayrak
+
+
+def tekillestir(bayraklar):
+    gorulen = set()
+    sonuc = []
+    for b in bayraklar:
+        if b.startswith("-l"):
+            sonuc.append(b)
+            continue
+        if b in gorulen:
+            continue
+        gorulen.add(b)
+        sonuc.append(b)
+    # -l'ler için sondaki tekrar sırası korunur (statik bağlamada son görünen kalır)
+    son = []
+    kalan = set()
+    for b in reversed(sonuc):
+        if b.startswith("-l"):
+            if b in kalan:
+                continue
+            kalan.add(b)
+        son.append(b)
+    return list(reversed(son))
+
+
+def main(arg):
+    secenek = set()
+    degisken_ad = None
+    istenen_surum = None
+    moduller = []
+    i = 0
+    while i < len(arg):
+        a = arg[i]
+        if a.startswith("--"):
+            if "=" in a:
+                ad, deger = a.split("=", 1)
+            else:
+                ad, deger = a, None
+            if ad in ("--variable", "--atleast-version", "--exact-version", "--max-version",
+                      "--atleast-pkgconfig-version", "--define-variable"):
+                if deger is None:
+                    i += 1
+                    deger = arg[i] if i < len(arg) else ""
+                if ad == "--variable":
+                    degisken_ad = deger
+                elif ad == "--atleast-pkgconfig-version":
+                    return 0
+                elif ad == "--define-variable":
+                    pass
+                else:
+                    istenen_surum = (ad, deger)
+            secenek.add(ad)
+        else:
+            moduller.append(a)
+        i += 1
+    if "--version" in secenek:
+        print("0.29.2")
+        return 0
+    gerek = gereksinimler(" ".join(moduller))
+    hata = []
+    for ad, op, surum in gerek:
+        pc = pc_oku(ad)
+        if pc is None:
+            hata.append("Package %s was not found in the pkg-config search path." % ad)
+            continue
+        s = pc["alan"].get("Version", "0")
+        if not uyar(s, op, surum):
+            hata.append("Requested '%s %s %s' but version of %s is %s" % (ad, op, surum, ad, s))
+            continue
+        if istenen_surum:
+            op2 = {"--atleast-version": ">=", "--exact-version": "=", "--max-version": "<="}[istenen_surum[0]]
+            if not uyar(s, op2, istenen_surum[1]):
+                hata.append("Requested '%s %s %s' but version of %s is %s" % (ad, op2, istenen_surum[1], ad, s))
+    if hata:
+        if "--print-errors" in secenek or "--short-errors" in secenek or "--errors-to-stdout" in secenek:
+            hedef = sys.stdout if "--errors-to-stdout" in secenek else sys.stderr
+            for h in hata:
+                print(h, file=hedef)
+        return 1
+    adlar = [g[0] for g in gerek]
+    if "--modversion" in secenek:
+        for ad in adlar:
+            print(pc_oku(ad)["alan"].get("Version", ""))
+        return 0
+    if degisken_ad is not None:
+        degerler = []
+        for ad in adlar:
+            v = pc_oku(ad)["degisken"].get(degisken_ad, "")
+            if SYSROOT and v.startswith("/") and not v.startswith(SYSROOT) and degisken_ad not in ("prefix", "exec_prefix"):
+                v = SYSROOT + v
+            degerler.append(v)
+        print(" ".join(degerler))
+        return 0
+    if "--print-requires" in secenek:
+        for ad in adlar:
+            for g in gereksinimler(pc_oku(ad)["alan"].get("Requires", "")):
+                print(g[0])
+        return 0
+    cikti = []
+    statik = "--static" in secenek
+    if secenek & {"--cflags", "--cflags-only-I", "--cflags-only-other"}:
+        c = kok_ekle(topla(adlar, "Cflags", statik, set()))
+        if "--cflags-only-I" in secenek:
+            c = [x for x in c if x.startswith("-I")]
+        if "--cflags-only-other" in secenek:
+            c = [x for x in c if not x.startswith("-I")]
+        cikti += tekillestir(c)
+    if secenek & {"--libs", "--libs-only-l", "--libs-only-L", "--libs-only-other"}:
+        # statik bağlamada Libs.private her zaman eklenir (bütün kütüphaneler .a)
+        l = kok_ekle(topla(adlar, "Libs", True, set()))
+        if "--libs-only-l" in secenek:
+            l = [x for x in l if x.startswith("-l")]
+        if "--libs-only-L" in secenek:
+            l = [x for x in l if x.startswith("-L")]
+        if "--libs-only-other" in secenek:
+            l = [x for x in l if not x.startswith("-l") and not x.startswith("-L")]
+        cikti += tekillestir(l)
+    if cikti:
+        print(" ".join(cikti))
+    return 0
+
+
+sys.exit(main(sys.argv[1:]))

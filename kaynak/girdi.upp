@@ -408,6 +408,7 @@ fonk konsol_klavye_kip(sayi pid, sayi kip) -> bos {
 // Kipleri değiştiren süreç bitince konsol metin kipine ve K_XLATE'e döner (yoksa ekran
 // ve klavye takılı kalır).
 fonk konsol_surec_bitti(sayi pid) -> bos {
+    tty_termios_surec_bitti(pid);
     eger (pid == 0 || g_konsol_sahip != pid) { don; }
     g_konsol_sahip = 0;
     g_vt_kip = 0;

@@ -308,6 +308,69 @@ fonk sc_access(sayi s, sayi dirfd, sayi yol_adr, sayi kip) -> sayi {
     don 0;
 }
 
+// ---- link / linkat ----
+// VFS'te sabit bağlantı (aynı inode'a iki ad) yoktur: yeni ad, dosyanın içeriği ve kipiyle
+// bir kopyadır. X sunucusunun kilit dosyası (geçici dosya link ile yerine konur) gibi
+// "atomik oluştur, varsa EEXIST" kullanımları için yeterlidir; sonraki yazmalar paylaşılmaz.
+fonk sc_link(sayi s, sayi eski_dirfd, sayi eski_adr, sayi yeni_dirfd, sayi yeni_adr, sayi bayrak) -> sayi {
+    eger ((bayrak & (0xFFFFFFFF - 1024 - AT_EMPTY_PATH)) != 0) { don -EINVAL; }   // AT_SYMLINK_FOLLOW
+    metin eski = sc_yol_at(s, eski_dirfd, eski_adr, yanlis);
+    eger (eski == yok) { don g_sc_hata; }
+    metin yeni = sc_yol_at(s, yeni_dirfd, yeni_adr, yanlis);
+    eger (yeni == yok) { don g_sc_hata; }
+    sayi no = fs_coz(eski);
+    eger (no < 0) { don -ENOENT; }
+    eger (g_fs[no].tur == D_DIZIN) { don -EPERM; }
+    eger (fs_coz(yeni) >= 0) { don -EEXIST; }
+    sayi ust = fs_coz(yol_dizin(yeni));
+    eger (ust < 0) { don -ENOENT; }
+    eger (!fs_dizin_mi(ust)) { don -ENOTDIR; }
+    eger (fs_salt_okunur(ust)) { don -EROFS; }
+    eger (g_fs[no].tur != D_DOSYA) { don -EPERM; }
+    eger (fs_kopyala(no, ust, yol_ad(yeni)) < 0) { don -EIO; }
+    don 0;
+}
+
+// ---- chmod / fchmod / fchmodat, chown ailesi ----
+// fd >= 0: fchmod. Kip 07777 ile sınırlanır; boru, soket gibi düğümsüz tanımlayıcılarda
+// Linux'taki gibi başarılıdır (sahipleri yok).
+fonk sc_chmod(sayi s, sayi dirfd, sayi yol_adr, sayi kip, sayi fd) -> sayi {
+    sayi no = -1;
+    eger (fd >= 0) {
+        eger (!fd_gecerli(s, fd)) { don -EBADF; }
+        sayi y = fd_yer(s, fd);
+        sayi tur = g_fd_tur[y];
+        eger (tur != FD_DOSYA && tur != FD_DIZIN) { don 0; }
+        no = g_fd_no[y];
+    } yoksa {
+        metin yol = sc_yol_at(s, dirfd, yol_adr, yanlis);
+        eger (yol == yok) { don g_sc_hata; }
+        no = fs_coz(yol);
+        eger (no < 0) { don -ENOENT; }
+    }
+    eger (fs_salt_okunur(no)) { don -EROFS; }
+    sayi eski = g_fs[no].kip;
+    g_fs[no].kip = kip & 4095;
+    eger (!fs_oznitelik(no)) {
+        g_fs[no].kip = eski;
+        don -EIO;
+    }
+    don 0;
+}
+
+// Sahiplik tutulmaz (her şey root'undur): yol ya da tanımlayıcı geçerliyse başarılı.
+fonk sc_chown(sayi s, sayi dirfd, sayi yol_adr, sayi fd) -> sayi {
+    eger (fd >= 0) {
+        eger (!fd_gecerli(s, fd)) { don -EBADF; }
+        don 0;
+    }
+    metin yol = sc_yol_at(s, dirfd, yol_adr, yanlis);
+    eger (yol == yok) { don g_sc_hata; }
+    eger (fs_coz(yol) < 0) { don -ENOENT; }
+    eger (fs_salt_okunur(fs_coz(yol))) { don -EROFS; }
+    don 0;
+}
+
 // ---- getcwd / chdir / fchdir ----
 fonk sc_getcwd(sayi s, sayi buf, sayi n) -> sayi {
     metin yol = fs_yol(g_surec[s].cwd);

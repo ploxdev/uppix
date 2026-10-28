@@ -441,6 +441,17 @@ fonk epoll_kayit(sayi e, sayi s, sayi fd) -> sayi {
     don -1;
 }
 
+// Tanımlayıcı yuvası kapandı ya da başka bir nesneye geçti: o (süreç, fd) kayıtları düşer.
+// Linux'ta kayıt dosyanın kapanışıyla kalkar; X sunucusu kapattığı istemcinin numarası
+// yeni bağlantıya verildiğinde EPOLL_CTL_ADD'den EEXIST almamalıdır.
+fonk epoll_fd_dus(sayi s, sayi fd) -> bos {
+    her (sayi e in 0..g_epoll.uzunluk()) {
+        eger (!g_epoll[e].etkin) { devam; }
+        sayi i = epoll_kayit(e, s, fd);
+        eger (i >= 0) { epoll_kayit_sil(e, i); }
+    }
+}
+
 fonk epoll_kayit_sil(sayi e, sayi i) -> bos {
     g_epoll[e].sahip.sil(i);
     g_epoll[e].fd.sil(i);

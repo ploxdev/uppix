@@ -55,9 +55,34 @@ sabit sayi MAP_ANONYMOUS = 32;
 
 // ioctl
 sabit sayi TCGETS = 0x5401;
+sabit sayi TCSETS = 0x5402;
+sabit sayi TCSETSF = 0x5404;
+sabit sayi TIOCSCTTY = 0x540E;
+sabit sayi TIOCGPGRP = 0x540F;
+sabit sayi TIOCSPGRP = 0x5410;
 sabit sayi TIOCGWINSZ = 0x5413;
+sabit sayi FIONBIO = 0x5421;
+sabit sayi TIOCNOTTY = 0x5422;
+sabit sayi TIOCGSID = 0x5429;
+sabit sayi FBIOPUT_VSCREENINFO = 0x4601;
+sabit sayi FBIOGETCMAP = 0x4604;
+sabit sayi FBIOPUTCMAP = 0x4605;
+sabit sayi FBIOPAN_DISPLAY = 0x4606;
+sabit sayi FBIOBLANK = 0x4611;
 sabit sayi FBIOGET_VSCREENINFO = 0x4600;
 sabit sayi FBIOGET_FSCREENINFO = 0x4602;
+
+// tcsetattr ile kurulan termios (60 baytlık çekirdek tamponu; -1: kurulmadı, varsayılan
+// kanonik kip) ve kuran süreç. TCGETS bunu geri verir; satır düzeni her zaman kanoniktir.
+// Kuran süreç bitince varsayılana döner (konsol kipleri gibi).
+sayi g_tty_termios = -1;
+sayi g_tty_termios_sahip = 0;
+
+fonk tty_termios_surec_bitti(sayi pid) -> bos {
+    eger (g_tty_termios < 0 || g_tty_termios_sahip != pid) { don; }
+    upp.tampon.birak(g_tty_termios);
+    g_tty_termios = -1;
+}
 
 sabit sayi SIGINT = 2;
 sabit sayi SIGKILL = 9;
@@ -204,6 +229,31 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (no == 200) { don sc_tkill(s, isaretli32(a1), isaretli32(a1), a2); }
     eger (no == 234) { don sc_tkill(s, isaretli32(a1), isaretli32(a2), a3); }
     eger (no == 111) { don g_surec[s].pgid; }                 // getpgrp
+    eger (no == 112) {                                        // setsid: yeni oturum ve grup
+        eger (g_surec[s].pgid == g_surec[s].pid) { don -EPERM; }   // zaten grup lideri
+        g_surec[s].pgid = g_surec[s].pid;
+        don g_surec[s].pid;
+    }
+    eger (no == 109) { don sc_setpgid(s, isaretli32(a1), isaretli32(a2)); }
+    // kimlik değiştirme: her süreç root'tur (0); 0'a ya da değişmeden (-1) kurmak başarılı,
+    // başka kimlik tutulmadığından EPERM
+    eger (no == 105 || no == 106) { eger (isaretli32(a1) == 0) { don 0; } don -EPERM; }   // setuid, setgid
+    eger (no == 113 || no == 114) { don sc_kimlik_kur(isaretli32(a1), isaretli32(a2), -1); } // setreuid, setregid
+    eger (no == 117 || no == 119) { don sc_kimlik_kur(isaretli32(a1), isaretli32(a2), isaretli32(a3)); } // setresuid, setresgid
+    eger (no == 118 || no == 120) { don sc_kimlik_ver(s, a1, a2, a3); }   // getresuid, getresgid
+    eger (no == 115) { don 0; }                               // getgroups: ek grup yok
+    eger (no == 116) {                                        // setgroups
+        eger (a1 == 0) { don 0; }
+        don -EPERM;
+    }
+    eger (no == 86) { don sc_link(s, AT_FDCWD, a1, AT_FDCWD, a2, 0); }
+    eger (no == 265) { don sc_link(s, a1, a2, a3, a4, a5); }
+    eger (no == 90) { don sc_chmod(s, AT_FDCWD, a1, a2, -1); }
+    eger (no == 91) { don sc_chmod(s, AT_FDCWD, 0, a2, a1); }
+    eger (no == 268) { don sc_chmod(s, a1, a2, a3, -1); }
+    eger (no == 92 || no == 94) { don sc_chown(s, AT_FDCWD, a1, -1); }
+    eger (no == 93) { don sc_chown(s, AT_FDCWD, 0, a1); }
+    eger (no == 260) { don sc_chown(s, a1, a2, -1); }
     eger (no == 121 || no == 124) { don sc_getpgid(s, isaretli32(a1)); } // getpgid, getsid
     eger (no == 99) { don sc_sysinfo(s, a1); }
     eger (!g_sc_bildirildi.var_mi(no)) {
@@ -287,6 +337,18 @@ fonk sc_yapi_ver(sayi s, sayi adres, sayi t, sayi n) -> sayi {
 fonk sc_kip(sayi s, sayi kip) -> sayi => (kip & 4095) - (kip & g_surec[s].umask & 4095);
 
 fonk sc_on_planda(sayi s) -> mantik => g_surec[s].gorev == 1;
+
+// setre*/setres*: her kimlik -1 (değişmez) ya da 0 olabilir.
+fonk sc_kimlik_kur(sayi a, sayi b, sayi c) -> sayi {
+    eger ((a != -1 && a != 0) || (b != -1 && b != 0) || (c != -1 && c != 0)) { don -EPERM; }
+    don 0;
+}
+
+// getresuid/getresgid: üç kimlik de 0.
+fonk sc_kimlik_ver(sayi s, sayi a, sayi b, sayi c) -> sayi {
+    eger (sc_int_ver(s, a, 0) < 0 || sc_int_ver(s, b, 0) < 0 || sc_int_ver(s, c, 0) < 0) { don -EFAULT; }
+    don 0;
+}
 
 // int türündeki argüman (pid_t, int): üst 32 bit çağırana göre çöp olabilir.
 fonk isaretli32(sayi v) -> sayi {
@@ -843,6 +905,19 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi tur = g_fd_tur[fd_yer(s, fd)];
     eger ((istek & 0xFFFFFFFF) == FIONREAD) { don sc_fionread(s, fd_yer(s, fd), arg); }
+    eger ((istek & 0xFFFFFFFF) == FIONBIO) {
+        // int *arg sıfır değilse O_NONBLOCK açılır
+        sayi t = upp.tampon.yeni(4);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 4);
+        sayi v = upp.tampon.oku32(t, 0);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+        sayi y = fd_yer(s, fd);
+        sayi b = g_fd_bayrak[y] - (g_fd_bayrak[y] & O_NONBLOCK);
+        eger (v != 0) { b = b | O_NONBLOCK; }
+        g_fd_bayrak.yaz(y, b);
+        don 0;
+    }
     eger (tur == FD_OLAY) { don sc_olay_ioctl(s, fd_yer(s, fd), istek, arg); }
     eger (tur == FD_TERMINAL) {
         sayi k = sc_konsol_ioctl(s, istek & 0xFFFFFFFF, arg);
@@ -855,6 +930,23 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
             upp.tampon.yaz16(t, 4, upp.cekirdek.ekran_bilgi(2));
             upp.tampon.yaz16(t, 6, upp.cekirdek.ekran_bilgi(3));
             don sc_yapi_ver(s, arg, t, 8);
+        }
+        eger (istek >= TCSETS && istek <= TCSETSF) {
+            sayi t = upp.tampon.yeni(60);
+            eger (!upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 60)) {
+                upp.tampon.birak(t);
+                don -EFAULT;
+            }
+            eger (g_tty_termios >= 0) { upp.tampon.birak(g_tty_termios); }
+            g_tty_termios = t;
+            g_tty_termios_sahip = g_surec[s].pid;
+            don 0;
+        }
+        eger (istek == TIOCSCTTY || istek == TIOCNOTTY || istek == TIOCSPGRP) { don 0; }
+        eger (istek == TIOCGPGRP || istek == TIOCGSID) { don sc_int_ver(s, arg, g_surec[s].pgid); }
+        eger (istek == TCGETS && g_tty_termios >= 0) {
+            eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, arg, g_tty_termios, 0, 60)) { don -EFAULT; }
+            don 0;
         }
         eger (istek == TCGETS) {
             // struct termios (60 bayt): kanonik kip, yankı, ISIG; isatty() bunu kullanır
@@ -872,6 +964,21 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
         }
         don -ENOTTY;
     }
+    eger (tur == FD_FB && istek == FBIOPUT_VSCREENINFO) {
+        // kip değiştirilemez: istenen çözünürlük ve derinlik şimdiki ise başarılı ve
+        // gerçek değerler geri yazılır (Linux fbdev gibi), değilse EINVAL
+        sayi t = upp.tampon.yeni(160);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 160);
+        sayi gen = upp.tampon.oku32(t, 0);
+        sayi yuk = upp.tampon.oku32(t, 4);
+        sayi bpp = upp.tampon.oku32(t, 24);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+        eger ((gen != 0 && gen != upp.cekirdek.ekran_bilgi(2)) || (yuk != 0 && yuk != upp.cekirdek.ekran_bilgi(3)) || (bpp != 0 && bpp != upp.cekirdek.ekran_bilgi(5))) { don -EINVAL; }
+        don sc_ioctl(s, fd, FBIOGET_VSCREENINFO, arg);
+    }
+    eger (tur == FD_FB && (istek == FBIOPAN_DISPLAY || istek == FBIOBLANK || istek == FBIOPUTCMAP)) { don 0; }
+    eger (tur == FD_FB && istek == FBIOGETCMAP) { don -EINVAL; }
     eger (tur == FD_FB && istek == FBIOGET_VSCREENINFO) {
         // struct fb_var_screeninfo (160 bayt)
         sayi gen = upp.cekirdek.ekran_bilgi(2);

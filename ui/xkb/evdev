@@ -1,0 +1,19 @@
+// Uppix: en küçük XKB kural dosyası (xkeyboard-config'in rules/evdev'i derleme sırasında
+// parçalardan üretilir; burada yalnızca X sunucusunun kullandığı eşlemeler var).
+// Model ne olursa olsun evdev tuş kodları, tam tür ve uyumluluk tanımları ve PC tuş
+// takımı üstüne seçilen düzen (ör. tr, us) ve çeşidi.
+
+! model		=	keycodes
+  *		=	evdev+aliases(qwerty)
+
+! model		=	geometry
+  *		=	pc(pc105)
+
+! model		layout	=	symbols
+  *		*	=	pc+%l%(v)+inet(evdev)
+
+! model		=	types
+  *		=	complete
+
+! model		=	compat
+  *		=	complete

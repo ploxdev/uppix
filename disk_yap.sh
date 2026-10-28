@@ -19,6 +19,10 @@
 #   ÇIKTI/kullanici/ altına yazılır ve kökte /usr/bin'e konur.
 #       usb-fat32.img, usb-exfat.img yoksa oluşturulur.
 #
+#   Grafik arayüz: derleme/ui/kur varsa (sh ui/derle.sh) içindekiler köke kopyalanır:
+#   /usr/bin/Xfbdev, jwm, xkbcomp, xdeneme ve /usr/share/X11/xkb. JWM ayarları
+#   (/etc/jwm/system.jwmrc) kok/ ağacından gelir.
+#
 # Gerekenler: mkfs.ext4 (e2fsprogs), sfdisk, mkfs.fat + mtools (dosfstools, mtools),
 # mkfs.exfat (exfatprogs), cc. FS_ARACLAR, paketlerin açıldığı dizini gösterebilir.
 set -e
@@ -72,6 +76,29 @@ kullanici_derle() {
     fi
 }
 
+UIKUR="$BURA/derleme/ui/kur"
+
+# Var olan imajın ext4 köküne grafik arayüz dosyalarını yazar (dizinler kurulur, dosyalar
+# yenilenir). $1 imaj, $2 bölüm ofseti (bayt).
+ui_guncelle() {
+    [ -d "$UIKUR/usr" ] || return 0
+    K=$(mktemp)
+    ( cd "$UIKUR" && find usr -type d ) | while read -r d; do echo "mkdir /$d"; done > "$K"
+    ( cd "$UIKUR" && find usr -type f ) | while read -r f; do
+        echo "rm /$f"
+        echo "write $UIKUR/$f /$f"
+        case "$f" in
+            usr/bin/*) echo "set_inode_field /$f mode 0100755" ;;
+            *) echo "set_inode_field /$f mode 0100644" ;;
+        esac
+    done >> "$K"
+    # JWM ayarları kok/'tan gelir; imajda zaten varsa (düzenlenmiş olabilir) dokunulmaz
+    printf 'mkdir /etc/jwm\nwrite %s /etc/jwm/system.jwmrc\nset_inode_field /etc/jwm/system.jwmrc mode 0100644\n' \
+        "$BURA/kok/etc/jwm/system.jwmrc" >> "$K"
+    debugfs -w -f "$K" "$1?offset=$2" >/dev/null 2>&1 || echo "[disk] uyarı: grafik arayüz dosyaları yazılamadı"
+    rm -f "$K"
+}
+
 # Var olan imajın ext4 kökünde /usr/bin'deki programları yeniler. $1 imaj, $2 bölüm ofseti (bayt).
 kullanici_guncelle() {
     [ -d "$CIKTI/kullanici" ] || return 0
@@ -109,6 +136,12 @@ ext4_kok() {
             cp "$p" "$HAZIR/usr/bin/"
             chmod 755 "$HAZIR/usr/bin/$(basename "$p")"
         done
+    fi
+    if [ -d "$UIKUR/usr" ]; then
+        cp -R "$UIKUR/usr/." "$HAZIR/usr/"
+        find "$HAZIR/usr/share/X11" -type d -exec chmod 755 {} +
+        find "$HAZIR/usr/share/X11" -type f -exec chmod 644 {} +
+        chmod 755 "$HAZIR"/usr/bin/*
     fi
     if [ -n "$3" ]; then
         cp "$3" "$HAZIR/boot/"
@@ -182,6 +215,7 @@ kullanici_derle
 if [ -f "$IMAJ" ]; then
     mcopy -o -i "$IMAJ@@1M" "$CEKIRDEK" ::/uppix.elf
     kullanici_guncelle "$IMAJ" $((133120 * 512))
+    ui_guncelle "$IMAJ" $((133120 * 512))
     echo "[disk] çekirdek ve kullanıcı programları güncellendi: $IMAJ (FAT32 /uppix.elf, ext4 /usr/bin)"
 else
     gerek mkfs.ext4 debugfs sfdisk mkfs.fat cc
