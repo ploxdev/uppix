@@ -5,6 +5,8 @@
 !kullanici/*.c
 !kullanici/glibc/*.c
 !kullanici/x11/*.c
+!kullanici/doom/*.c
+!kullanici/doom/doomgeneric/*.c
 !ui/yama/*/*.c
 *.o
 *.obj

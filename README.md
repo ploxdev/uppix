@@ -288,6 +288,7 @@ qemu-system-x86_64 -m 256 -serial stdio -display gtk -drive file=derleme/uppix.i
 | [`ayarlar`](kullanici/x11/ayarlar.c) | Tema (Gece, Orman, Gün batımı, Grafit: masaüstü degradesi, başlık, şerit ve menü renkleri), klavye düzeni (us / tr), saat biçimi ve sistem bilgisi (çekirdek, bellek, ekran, açık kalma süresi). "Uygula" `/etc/jwm/tema.jwmrc`, `/etc/jwm/ayarlar` ve `/etc/X11/klavye`'yi yazar, düzeni XKB ile hemen yükler (`XkbGetKeyboardByName`; sonraki `startx` de `-xkb-layout` ile açar) ve `jwm -restart` çalıştırır (2.4'te `-reload` yalnızca menüyü yükler). `ayarlar --uygula TEMA SAAT us\|tr` penceresiz uygular |
 | [`oturum`](kullanici/x11/oturum.c) | Onay penceresi: Oturumu kapat (`jwm -exit`; startx X'i durdurur, konsol metin kipine döner), Yeniden başlat ve Kapat (`reboot(2)`: çekirdek dosya sistemlerini boşaltır). `oturum cikis\|yeniden\|kapat` yalnızca o işi sorar; Enter onaylar, Esc vazgeçer |
 | [`xdeneme`](kullanici/x11/xdeneme.c) | Test penceresi: yeşil pencere, kırmızı dikdörtgen, bir tuş ve bir fare olayı |
+| [`doom`](kullanici/doom/uppix.c) | Doom (bkz. [Doom](#doom)) |
 
 Üçü de ortak [`arayuz.h`](kullanici/x11/arayuz.h)'yi kullanır: TrueColor renkler, degrade dolgu, düğmeler, UTF-8 → ISO 8859-1 metin ve pencere adı (`WM_NAME` Latin-1, `_NET_WM_NAME` UTF-8).
 
@@ -301,6 +302,16 @@ qemu-system-x86_64 -m 256 -serial stdio -display gtk -drive file=derleme/uppix.i
 - **JWM metni:** Xft olmadan JWM metni X çekirdek yazı tipiyle dönüştürmeden çizer. Küçük bir yama ([`ui/yama/jwm/latin1.py`](ui/yama/jwm/latin1.py)) çizimden ve genişlik ölçmeden önce UTF-8'i ISO 8859-1'e çevirir; böylece menüler ve başlıklar UTF-8 yazılabilir.
 
 **Sınırlar:** Tek ekran ve tek kip vardır (Limine'nin verdiği çerçeve tamponu, ör. 1280x800x32); `FBIOPUT_VSCREENINFO` yalnızca geçerli kipi kabul eder. VT geçişi (Ctrl-Alt-F*) yok. Yazı tipleri yalnızca `fixed` (6x13) ve `cursor`'dır; `fixed` ISO 8859-1 olduğundan ü, ö, ç doğru görünür ama ş, ğ, ı, İ menülerde, başlıklarda ve uçbirimde s, g, i, I olarak çizilir (kabuğa ve dosyalara UTF-8 gider). Duvar kâğıdı yalnızca düz renk ya da degradedir (XPM/PNG için kitaplık yok). uterm'de geri kaydırma ve seçim/pano yok; sistem çağrısı yapmayan bir döngü uçbirimden Ctrl-C ile kesilmez (`kill` ile durur). PTY yavru ucunu doğrudan okuyan programlar ham bayt alır (satır düzeni kabuktadır). `link` kopyalar, sahiplik tutulmaz, her süreç root'tur. X ve istemciler AF_UNIX ile konuşur (TCP yok); dosya yolu soketi yalnızca bellekteki dosya sistemlerinde kurulabilir (`/tmp`). İşbirlikçi çekirdekte bekleyen çağrılar 1 ms'lik adımlarla yokladığından her X gidiş-dönüşü bir zamanlayıcı adımı sürer: JWM'nin açılışı yaklaşık 5 saniyedir. ush'ta boru (`|`) yoktur.
+
+### Doom
+
+id Software'in Doom'u, [doomgeneric](https://github.com/ozkl/doomgeneric) (Chocolate Doom'dan türetilmiş, ekranı ve tuşları dört işleve indirgeyen sürüm; GPLv2) ile çalışır. Kaynak [`kullanici/doom/doomgeneric`](kullanici/doom/doomgeneric)'tedir (ozkl/doomgeneric `e257a09`, yalnızca derlenen dosyalar; değiştirilmedi). Uppix arka ucu [`kullanici/doom/uppix.c`](kullanici/doom/uppix.c)'dir; `ui/derle.sh` musl ve libX11 ile statik derleyip `/usr/bin/doom` yapar. Bölüm dosyası paylaşımlı (shareware) **DOOM1.WAD** v1.9'dur (1. bölüm "Knee-Deep in the Dead", 9 harita; Debian'ın `doom-wad-shareware` paketinden, MD5 `f0cefca49926d00903cf57551d901abe`). id Software paylaşımlı sürümün değiştirilmeden ücretsiz dağıtılmasına izin verir: lisans [`doom1.wad.lisans`](kullanici/doom/doom1.wad.lisans)'tadır. Dosya imajda `/usr/share/games/doom/`'dadır; Doom orayı kendisi arar. Tam sürümün `doom.wad`'ı ya da `doom2.wad` aynı dizine konursa ya da `-iwad` ile verilirse onlar da açılır.
+
+- **Masaüstünde:** menüde "Doom" ya da Ctrl-Alt-D; 640x400'lük bir pencere açılır.
+- **Konsolda:** X açık değilken `doom` tam ekran açılır (`/dev/fb0`, 1280x800'de 2 kat büyütülmüş). Klavye `/dev/input/event0`'dan okunur ve oyun açıkken kabuğa gitmez. Çıkınca konsol metin kipine döner.
+- `-fb` / `-x11` kipi zorlar; Doom'un kendi seçenekleri de geçer (`-warp 1 3`, `-skill 4`, `-timedemo demo1` …). Ayarlar (`default.cfg`) ve kayıtlar `$HOME`'a (yoksa `/root`) yazılır.
+
+Tuşlar: oklar yürür/döner, Ctrl ateş eder, boşluk kapı açar, Shift koşturur, Alt basılıyken oklar yana kaydırır, `,` `.` yana adım, 1-7 silah, Tab harita, Esc menü, F2/F3 kaydet/yükle. Tuşlar klavyedeki yerlerine göre okunur (X'te keycode, konsolda evdev kodu), bu yüzden `tr` düzeninde de aynı çalışır. Ses yoktur (Uppix'te ses aygıtı yok).
 
 ## Mimari
 
@@ -329,7 +340,7 @@ qemu-system-x86_64 -m 256 -serial stdio -display gtk -drive file=derleme/uppix.i
 | `kaynak/sistem_cagrisi_dosya.upp` | Dosya sistemi ve tanımlayıcı çağrıları (pread/pwrite, readv/writev, dup, fcntl, getdents64, access, getcwd/chdir, mkdir, unlink, rename, readlink) |
 | `kaynak/sistem_cagrisi_surec.upp` | Süreç, zaman, TLS ve sinyal çağrıları (fork/clone, execve, wait4/waitid, kill, arch_prctl, uname, clock_*, getrandom, mprotect, rt_sig*, prlimit64, futex…) |
 | `kaynak/duzenleyici.upp` | `nano` ve `vi`'nin ortak düzenleyici çekirdeği |
-| `kullanici/*.c` | Ring 3 programları (libc'siz statik Linux ELF); `linux.h` ortak başlık; `kullanici/glibc/*.c` glibc ile statik; `kullanici/x11/*.c` libX11 ile (musl, `ui/derle.sh`) |
+| `kullanici/*.c` | Ring 3 programları (libc'siz statik Linux ELF); `linux.h` ortak başlık; `kullanici/glibc/*.c` glibc ile statik; `kullanici/x11/*.c` libX11 ile (musl, `ui/derle.sh`); `kullanici/doom` doomgeneric, Uppix arka ucu ve DOOM1.WAD |
 | `ui/` | Grafik arayüz: `derle.sh` (X.Org Xfbdev, xkbcomp, JWM), `pkg-config`, `yama/` (zlib yer tutucusu, libsha1, gömülü yazı tiplerini açma), `xkb/evdev` |
 | `kaynak/yardimci.upp` | Sıralama, biçimleme, joker eşleme, takvim/Unix zamanı |
 
@@ -362,11 +373,12 @@ python3 tests/run_tests.py --uppc derleyici/uppc --dosya tests/cekirdek/06_uppix
 | `tests/cekirdek/10_uppix_ahci.upp` | Üç disk ICH9 AHCI kapılarında (`--disk-arayuz ahci`): Limine SATA diskinden açılır, kök ext4 SATA'dan bağlanır; `pciconf`, `devinfo` (`ahci0`, `ahcich0..5`) ve `lsblk`; ext4'e (birden çok DMA parçalı büyük dosya dahil), `/boot`'a, FAT32'ye ve exFAT'e yazılır, ring 3 programı SATA'dan yüklenir; sonra `e2fsck -fn`, `debugfs`, `fsck.fat -n`, `mtype`, `fsck.exfat -n` |
 | `tests/cekirdek/04_uppix_limine.upp` | `uppix.img`'i üretir ve Limine ile 64-bit açar; `/boot` ve kökü yazar, sonra iki bölümü `e2fsck`, `fsck.fat` ve `mtype` ile denetler |
 | `tests/cekirdek/14_uppix_x11.upp` | Grafik arayüz (`--qemu-izleyici`, `@sure: 400`): `@hazirla` `ui/derle.sh`'i çalıştırır (önbellekten hızlı); `startx`, JWM'nin hazır satırı, `xdeneme` penceresi ve izleyiciden `sendkey`/`mouse_move`/`mouse_button`; `uterm`'e yazılan komutların (`echo`, `ls /dev/pts`, `pwd`) PTY'deki uppsh oturumundan gelen çıktısı (`--dokum`); kök menü; `ayarlar --uygula` ile tema, saat ve `tr` düzeni; `oturum cikis` onayı, ikinci `startx`, metin kipi; son olarak `oturum kapat` ile `reboot(2)`. `screendump`'larda pencere, masaüstü degradesi, şerit, uçbirim, menü ve yeni tema pikselleri; sonra `e2fsck` |
+| `tests/cekirdek/15_uppix_doom.upp` | Doom (`--qemu-izleyici`, `@sure: 600`): konsolda `doom -fb` 1280x800'e 2 kat; izleyiciden Esc, Yukarı, Enter, y ile menüden çıkış ve metin kipine dönüş; `startx`'ten sonra `doom -timedemo demo1` X penceresinde demoyu oynatıp süreyi yazar. `screendump`'larda Doom karesi ve metin kipi; sonra `e2fsck` |
 
 ## Sınırlar ve sıradakiler
 
 - ext4 yazımı günlük (journal) kullanmaz. Dosya en çok 4 extent'te tutulur, yani boş alan çok parçalıysa büyük dosya yazılamaz. htree ile dizinlenmiş büyük dizinlere ekleme yapılmaz. Grup bitmap'i başlatılmamış (`*_UNINIT`) gruplar ayırmada atlanır.
-- FAT12/FAT16 ve 512 bayt dışı sektör boyutları desteklenmez. Önbellek yoktur: her işlem diske gider.
+- FAT12/FAT16 ve 512 bayt dışı sektör boyutları desteklenmez. Blok önbelleği yoktur: sürücüler dosyayı bütün olarak okur, yalnızca son okunan dosyanın içeriği bellekte tutulur ([`vfs.upp`](kaynak/vfs.upp), `fs_oku_tampon`; `read(2)` oradan pencereyi kopyalar). Diğer her işlem diske gider.
 - Disk sürücüleri ATA PIO ve AHCI'dir. AHCI tek komut yuvası kullanır (NCQ yok), kesme yerine yoklar, sıcak takmayı ve ATAPI (SATA CD) aygıtlarını desteklemez. NVMe ve virtio-blk sırada.
 - Aygıt ağacında PCI-PCI köprüleri ayrı veri yolu (`pcib`) olarak yer almaz: bütün veri yolları `pci0`'ın altında düz taranır. Sürücülere kesme (INTx/MSI) bağlanmaz, G/Ç BAR'ları için pencere yoktur. Multiboot yolunda BAR'ın MMIO penceresi yalnızca ilk 1 GiB'de açılabilir (Limine'de HHDM'in kapsadığı her adreste; QEMU'nun 4 GiB altındaki BAR'ları açılır); bu yüzden AHCI yalnızca Limine ile çalışır.
 - Çekirdek içindeki kod işbirlikçidir; yalnızca ring 3 kodu kesilir. Yerleşik komutlar çekirdek içinde çalışır.

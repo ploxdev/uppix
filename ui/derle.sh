@@ -93,7 +93,7 @@ adim() {
 for ad in $(echo "$PAKETLER" | awk 'NF { print $1 }'); do indir "$ad"; done
 
 # ---- sonuç güncel mi ----
-ozet_hepsi=$( (echo "$PAKETLER" "$SURUM"; cat "$0" "$BURA"/ui/pkg-config "$BURA"/ui/yama/*/* "$BURA"/ui/xkb/* "$BURA"/kullanici/x11/*.c "$BURA"/kullanici/x11/*.h 2>/dev/null) | sha256sum | cut -d' ' -f1)
+ozet_hepsi=$( (echo "$PAKETLER" "$SURUM"; cat "$0" "$BURA"/ui/pkg-config "$BURA"/ui/yama/*/* "$BURA"/ui/xkb/* "$BURA"/kullanici/x11/*.c "$BURA"/kullanici/x11/*.h "$BURA"/kullanici/doom/*.c "$BURA"/kullanici/doom/doomgeneric/*.[ch] 2>/dev/null; sha256sum "$BURA"/kullanici/doom/doom1.wad | cut -d" " -f1) | sha256sum | cut -d' ' -f1)
 if [ -f "$KUR/.ozet" ] && [ "$(cat "$KUR/.ozet")" = "$ozet_hepsi" ]; then
     bilgi "güncel: $KUR"
     exit 0
@@ -277,6 +277,20 @@ istemci_derle() {
 bilgi "X programları (uterm, ayarlar, oturum, xdeneme)"
 adim istemci istemci_derle
 
+# kullanici/doom: doomgeneric (GPLv2, ozkl/doomgeneric) ve Uppix arka ucu uppix.c
+doom_derle() {
+    od="$IS/doom"
+    rm -rf "$od"
+    mkdir -p "$od"
+    for c in "$BURA"/kullanici/doom/doomgeneric/*.c "$BURA"/kullanici/doom/uppix.c; do
+        musl-gcc $CFLAGS $CPPFLAGS -w -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE -I"$BURA/kullanici/doom/doomgeneric" \
+            -c -o "$od/$(basename "$c" .c).o" "$c" || return 1
+    done
+    musl-gcc -o "$IS/doom-ikili" "$od"/*.o $LDFLAGS -lX11 -lxcb -lXau -lm || return 1
+}
+bilgi "doom"
+adim doom doom_derle
+
 # ---- Uppix'e girecekler ----
 rm -rf "$KUR"
 mkdir -p "$KUR/usr/bin" "$KUR/usr/share/X11"
@@ -290,5 +304,9 @@ for c in "$BURA"/kullanici/x11/*.c; do
     strip "$KUR/usr/bin/$p" 2>/dev/null || true
 done
 cp -R "$KOK/usr/share/X11/xkb" "$KUR/usr/share/X11/xkb"
+cp "$IS/doom-ikili" "$KUR/usr/bin/doom"
+strip "$KUR/usr/bin/doom" 2>/dev/null || true
+mkdir -p "$KUR/usr/share/games/doom"
+cp "$BURA/kullanici/doom/doom1.wad" "$BURA/kullanici/doom/doom1.wad.lisans" "$KUR/usr/share/games/doom/"
 echo "$ozet_hepsi" > "$KUR/.ozet"
 bilgi "hazır: $KUR ($(du -sh "$KUR" | cut -f1))"

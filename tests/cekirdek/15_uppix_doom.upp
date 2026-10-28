@@ -1,0 +1,67 @@
+// Çekirdek: Uppix'te Doom (doomgeneric + kullanici/doom/uppix.c, ui/derle.sh musl ile statik
+// derler) ve paylaşımlı DOOM1.WAD (/usr/share/games/doom).
+// - Çerçeve tamponu kipi (-fb): konsol KD_GRAPHICS'e geçer, 640x400'lük kare 1280x800'e 2 kat
+//   büyütülür. Başlık ekranında izleyiciden Esc (menü), Yukarı (Quit Game), Enter ve y ile
+//   oyundan çıkılır; çıkışta konsol yeniden metin kipindedir.
+// - X kipi: startx'ten sonra doom kendiliğinden pencere açar; -timedemo demo1 demoyu
+//   oynatıp "timed N gametics in M realtics" yazar ve çıkar.
+// Denetim: screendump'larda Doom karesi (çok renkli, fb'de bütün ekran; X'te 640x400'lük
+// pencere), çıkıştan sonra metin kipi; ext4 kök e2fsck ile temiz çıkmalı.
+// @gerek: cc make python3 curl xz bzip2 mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
+// @hazirla: sh ui/derle.sh > /tmp/upp_ui_derle.log 2>&1 || { tail -n 20 /tmp/upp_ui_derle.log; false; }
+// @hazirla: rm -rf tests/_cikti/doom_img && rm -f /tmp/upp_doom_*.ppm
+// @sure: 600
+// @bayrak: --onyukleyici limine --qemu-izleyici --disk tests/_cikti/doom_img/uppix.img --disk-hazirla disk_yap.sh
+// @girdi: ls -l /usr/bin/doom /usr/share/games/doom/doom1.wad
+// @girdi: doom -fb &
+// @bekle: doom: çerçeve tamponu
+// @girdi: sleep 8; echo bekle""di_1
+// @bekle: bekledi_1
+// @girdi_kacis: \x01cscreendump /tmp/upp_doom_1.ppm
+// @girdi: sendkey esc
+// @girdi_kacis: \x01c
+// @girdi: sleep 2; echo bekle""di_2
+// @bekle: bekledi_2
+// @girdi_kacis: \x01csendkey up
+// @girdi: sendkey ret
+// @girdi_kacis: \x01c
+// @girdi: sleep 2; echo bekle""di_3
+// @bekle: bekledi_3
+// @girdi_kacis: \x01csendkey y
+// @girdi_kacis: \x01c
+// @bekle: doom: bitti
+// @girdi: olaytest --kip
+// @bekle: konsol: KDGETMODE
+// @girdi_kacis: \x01cscreendump /tmp/upp_doom_2.ppm
+// @girdi_kacis: \x01c
+// @girdi: startx &
+// @bekle: jwm: masaüstü hazır
+// @girdi: export DISPLAY=:0
+// @girdi: doom -timedemo demo1 &
+// @bekle: doom: X penceresi
+// @girdi: sleep 10; echo bekle""di_4
+// @bekle: bekledi_4
+// @girdi_kacis: \x01cscreendump /tmp/upp_doom_3.ppm
+// @girdi_kacis: \x01c
+// @bekle: gametics in
+// @girdi: jwm -exit
+// @bekle: startx: oturum bitti
+// @girdi: poweroff
+// @icerir: /usr/share/games/doom/doom1.wad
+// @icerir: doom: çerçeve tamponu 1280x800, ölçek 2
+// @icerir: doom: X penceresi 640x400
+// @icerir: gametics in
+// @icerir: konsol: KDGETMODE 0 KDGKBMODE 1
+// @icerir: Sistem kapatılıyor...
+// @denetle: python3 -c "d=open('/tmp/upp_doom_1.ppm','rb').read(); q=d.split(b'\n',3)[3]; r=set(q[i:i+3] for i in range(0,len(q),3)); assert len(r) > 40, len(r); print('fb karesi tamam', len(r))"
+// @denetle: python3 -c "d=open('/tmp/upp_doom_2.ppm','rb').read(); q=d.split(b'\n',3)[3]; r=set(q[i:i+3] for i in range(0,len(q),3)); assert len(r) < 40, len(r); print('metin kipi tamam', len(r))"
+// @denetle: python3 -c "import collections; d=open('/tmp/upp_doom_3.ppm','rb').read(); q=d.split(b'\n',3)[3]; r=set(q[i:i+3] for i in range(0,len(q),3)); assert len(r) > 60, len(r); print('X karesi tamam', len(r))"
+// @denetle: rm -f /tmp/upp_doom_*.ppm
+// @denetle: dd if=tests/_cikti/doom_img/uppix.img of=/tmp/upp_doom_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_doom_p2.img && rm -f /tmp/upp_doom_p2.img
+
+kullan "../../kaynak/uppix.upp";
+
+fonk ana() -> sayi {
+    uppix_baslat();
+    don 0;
+}

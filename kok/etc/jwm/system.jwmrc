@@ -8,6 +8,7 @@
     <RootMenu onroot="13" label="Uppix">
         <Program label="Terminal">/usr/bin/uterm</Program>
         <Program label="Ayarlar">/usr/bin/ayarlar</Program>
+        <Program label="Doom">/usr/bin/doom</Program>
         <Program label="Test penceresi (xdeneme)">/usr/bin/xdeneme</Program>
         <Separator/>
         <Desktops label="Masalar"/>
@@ -50,6 +51,7 @@
     <Key mask="CA" key="Right">rdesktop</Key>
     <Key mask="CA" key="Left">ldesktop</Key>
     <Key mask="CA" key="t">exec:/usr/bin/uterm</Key>
+    <Key mask="CA" key="d">exec:/usr/bin/doom</Key>
     <Key mask="CA" key="Delete">exec:/usr/bin/oturum</Key>
 
     <!-- JWM 2.4'te fare bağlamalarının varsayılanı yoktur: bunlar olmadan pencereler
