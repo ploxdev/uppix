@@ -191,7 +191,7 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     // süreç, zaman, TLS
     eger (no == 60 || no == 231) {
         // exit / exit_group (tek iş parçacıklı süreçte aynıdır)
-        upp.cekirdek.kullanici_cikis_iste(a1 % 256);
+        upp.cekirdek.kullanici_cikis_iste(a1 & 255);
         don 0;
     }
     eger (no == 57 || no == 58) { don sc_fork(s, 0, 0, 0, 0, 0); } // fork, vfork (fork gibi)
@@ -481,8 +481,21 @@ fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
         icerik = g_surec[s].girdi;
         konum = g_surec[s].girdi_konum;
     } yoksa {
-        icerik = fs_oku(g_fd_no[y]);
+        sayi no = g_fd_no[y];
         konum = g_fd_konum[y];
+        // sıradan dosya: önbellekteki bayt tamponundan yalnızca istenen pencere kopyalanır
+        eger (g_fs[no].tur == D_DOSYA) {
+            eger (konum >= fs_boyut(no)) { don 0; }
+            sayi t = fs_oku_tampon(no);
+            sayi tn = upp.tampon.boyut(t);
+            eger (konum >= tn || fs_boyut(no) == 0) { don 0; }
+            sayi kt = n;
+            eger (kt > tn - konum) { kt = tn - konum; }
+            eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, buf, t, konum, kt)) { don -EFAULT; }
+            g_fd_konum.yaz(y, konum + kt);
+            don kt;
+        }
+        icerik = fs_oku(no);
     }
     sayi toplam = bayt_say(icerik);
     eger (konum >= toplam) { don 0; }

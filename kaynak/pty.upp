@@ -477,7 +477,7 @@ fonk pty_kabuk_yurut(sayi s, sayi p) -> sayi {
             don sc_bekleyen_bitir(s);
         }
     }
-    upp.cekirdek.kullanici_cikis_iste(g_oturum[no].cik_kod % 256);
+    upp.cekirdek.kullanici_cikis_iste(g_oturum[no].cik_kod & 255);
     don 0;
 }
 

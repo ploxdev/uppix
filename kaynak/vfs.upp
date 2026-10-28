@@ -254,6 +254,40 @@ fonk aygit_yaz(metin ad, metin veri) -> bos {
 }
 
 // ---- okuma / yazma ----
+// Okuma önbelleği: sürücüler yalnızca tam dosya okuyabildiğinden read(2) her çağrıda
+// bütün içeriği diskten getirir, sonra metni kopyalayıp pencereyi keserdi (4 MiB'lık bir
+// dosyayı 512 baytlık parçalarla okumak saatler sürer). Son okunan dosyanın içeriği metin
+// olarak, aralık okumaları için gerektiğinde bir de bayt tamponu olarak tutulur. Düğüm
+// numaraları yeniden kullanılmaz ve içeriği yalnızca fs_yaz değiştirir; yazma, silme,
+// taşıma ve bağlama değişikliklerinde önbellek bütünüyle unutulur.
+sayi g_oku_on_no = -1;
+metin g_oku_on_veri = "";
+sayi g_oku_on_t = -1;
+
+fonk fs_oku_onbellek_unut() -> bos {
+    eger (g_oku_on_t >= 0) { upp.tampon.birak(g_oku_on_t); }
+    g_oku_on_t = -1;
+    g_oku_on_no = -1;
+    g_oku_on_veri = "";
+}
+
+// Dosyanın (D_DOSYA, boş değil) içeriği bayt tamponu olarak; tampon önbelleğindir,
+// çağıran bırakmaz ve önbellek değişene dek kullanır.
+fonk fs_oku_tampon(sayi no) -> sayi {
+    eger (no == g_oku_on_no && g_oku_on_t >= 0) { don g_oku_on_t; }
+    metin icerik = fs_oku(no);
+    eger (no != g_oku_on_no) {
+        fs_oku_onbellek_unut();
+        g_oku_on_no = no;
+        g_oku_on_veri = icerik;
+    }
+    sayi n = bayt_say(icerik);
+    eger (n < 1) { n = 1; }
+    g_oku_on_t = upp.tampon.yeni(n);
+    upp.tampon.metin_yaz(g_oku_on_t, 0, icerik);
+    don g_oku_on_t;
+}
+
 fonk fs_oku(sayi no) -> metin {
     sayi t = g_fs[no].tur;
     eger (t == D_SANAL) {
@@ -262,8 +296,14 @@ fonk fs_oku(sayi no) -> metin {
     }
     eger (t == D_AYGIT) { don aygit_oku(g_fs[no].aygit); }
     eger (!bag_bellekte(g_fs[no].bag)) {
+        eger (no == g_oku_on_no) { don g_oku_on_veri; }
         Surucu s = dugum_surucu(no);
-        don s.oku(no);
+        metin icerik = s.oku(no);
+        eger (t == D_DOSYA) {
+            g_oku_on_no = no;
+            g_oku_on_veri = icerik;
+        }
+        don icerik;
     }
     don g_fs[no].veri;
 }
@@ -276,6 +316,11 @@ fonk fs_oku_aralik(sayi no, sayi ofs, sayi n) -> metin {
     eger (ofs >= toplam) { don ""; }
     sayi k = toplam - ofs;
     eger (k > n) { k = n; }
+    eger (g_fs[no].tur == D_DOSYA) {
+        sayi ot = fs_oku_tampon(no);
+        eger (ofs + k > upp.tampon.boyut(ot)) { don ""; }
+        don upp.tampon.metin(ot, ofs, k);
+    }
     metin icerik = fs_oku(no);
     sayi t = upp.tampon.yeni(bayt_say(icerik));
     upp.tampon.metin_yaz(t, 0, icerik);
@@ -286,6 +331,7 @@ fonk fs_oku_aralik(sayi no, sayi ofs, sayi n) -> metin {
 
 fonk fs_yaz(sayi no, metin veri, mantik ekle) -> mantik {
     g_fs_hata = "";
+    eger (no == g_oku_on_no) { fs_oku_onbellek_unut(); }
     sayi t = g_fs[no].tur;
     eger (t == D_AYGIT) {
         aygit_yaz(g_fs[no].aygit, veri);
@@ -298,6 +344,8 @@ fonk fs_yaz(sayi no, metin veri, mantik ekle) -> mantik {
     eger (!bag_bellekte(g_fs[no].bag)) {
         metin yeni = veri;
         eger (ekle) { yeni = fs_oku(no) + veri; }
+        // fs_oku eski içeriği yeniden önbelleğe almış olabilir
+        eger (no == g_oku_on_no) { fs_oku_onbellek_unut(); }
         Surucu s = dugum_surucu(no);
         g_fs[no].zaman = simdi();
         eger (!s.yaz(no, yeni)) { don yanlis; }
@@ -404,6 +452,7 @@ fonk fs_sil(sayi no) -> mantik {
         }
     }
     eger (!bag_bellekte(g_fs[no].bag)) {
+        fs_oku_onbellek_unut();
         Surucu s = dugum_surucu(no);
         eger (!s.sil(no)) { don yanlis; }
     }
@@ -425,6 +474,7 @@ fonk fs_tasi(sayi no, sayi yeni_ust, metin yeni_ad) -> mantik {
         don yanlis;
     }
     eger (!bag_bellekte(g_fs[no].bag)) {
+        fs_oku_onbellek_unut();
         Surucu s = dugum_surucu(no);
         eger (!s.tasi(no, yeni_ust, yeni_ad)) { don yanlis; }
     }
@@ -503,6 +553,7 @@ fonk kullanilan_bayt(sayi no) -> sayi {
 // tur: "tmpfs", "procfs", "devfs", "binfs" ya da kayıtlı bir sürücü adı.
 fonk fs_bagla(metin tur, metin aygit, sayi blok, sayi nokta, mantik salt) -> sayi {
     g_fs_hata = "";
+    fs_oku_onbellek_unut();
     eger (!fs_dizin_mi(nokta)) {
         g_fs_hata = "bağlama noktası bir dizin değil";
         don -1;
@@ -562,6 +613,7 @@ fonk fs_bag_geri_al(sayi no) -> bos {
 
 fonk fs_ayir_bag(sayi no) -> mantik {
     g_fs_hata = "";
+    fs_oku_onbellek_unut();
     sayi nokta = g_bag[no].nokta;
     // altında başka bağlama varsa reddet
     dongu (sayi i = 0; i < g_bag.uzunluk(); i += 1) {
