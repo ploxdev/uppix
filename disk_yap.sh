@@ -20,8 +20,8 @@
 #       usb-fat32.img, usb-exfat.img yoksa oluşturulur.
 #
 #   Grafik arayüz: derleme/ui/kur varsa (sh ui/derle.sh) içindekiler köke kopyalanır:
-#   /usr/bin/Xfbdev, jwm, xkbcomp, xdeneme ve /usr/share/X11/xkb. JWM ayarları
-#   (/etc/jwm/system.jwmrc) kok/ ağacından gelir.
+#   /usr/bin/Xfbdev, jwm, xkbcomp, uterm, ayarlar, oturum, xdeneme ve /usr/share/X11/xkb.
+#   JWM ayarları (/etc/jwm/system.jwmrc, tema.jwmrc) kok/ ağacından gelir.
 #
 # Gerekenler: mkfs.ext4 (e2fsprogs), sfdisk, mkfs.fat + mtools (dosfstools, mtools),
 # mkfs.exfat (exfatprogs), cc. FS_ARACLAR, paketlerin açıldığı dizini gösterebilir.
@@ -93,8 +93,10 @@ ui_guncelle() {
         esac
     done >> "$K"
     # JWM ayarları kok/'tan gelir; imajda zaten varsa (düzenlenmiş olabilir) dokunulmaz
-    printf 'mkdir /etc/jwm\nwrite %s /etc/jwm/system.jwmrc\nset_inode_field /etc/jwm/system.jwmrc mode 0100644\n' \
-        "$BURA/kok/etc/jwm/system.jwmrc" >> "$K"
+    echo "mkdir /etc/jwm" >> "$K"
+    for j in system.jwmrc tema.jwmrc; do
+        printf 'write %s /etc/jwm/%s\nset_inode_field /etc/jwm/%s mode 0100644\n' "$BURA/kok/etc/jwm/$j" "$j" "$j" >> "$K"
+    done
     debugfs -w -f "$K" "$1?offset=$2" >/dev/null 2>&1 || echo "[disk] uyarı: grafik arayüz dosyaları yazılamadı"
     rm -f "$K"
 }

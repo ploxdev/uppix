@@ -5,7 +5,8 @@
  * "soket görünene kadar bekle" bir kabuk betiği yerine bu programdır.
  *   startx                 Xfbdev + jwm
  *   startx /usr/bin/xdeneme
- * Sunucunun iletileri (stdout/stderr) /tmp/Xfbdev.0.log dosyasına gider. */
+ * Sunucunun iletileri (stdout/stderr) /tmp/Xfbdev.0.log dosyasına gider. Klavye düzeni
+ * /etc/X11/klavye'den okunur (ayarlar programı yazar; "tr" ya da "us"). */
 #include "linux.h"
 
 #define SIGTERM 15
@@ -13,6 +14,21 @@
 
 static char ortam_tampon[4096];
 static char* yeni_ortam[64];
+
+/* /etc/X11/klavye: düzen adı (küçük harf, en çok 15); yoksa us */
+static char duzen[16] = "us";
+
+static void duzen_oku(void) {
+    char b[16];
+    long f = sys_open("/etc/X11/klavye", O_RDONLY, 0);
+    long n;
+    int i;
+    if (f < 0) return;
+    n = sys_read((int)f, b, sizeof(b) - 1);
+    sys_close((int)f);
+    for (i = 0; i < n && b[i] >= 'a' && b[i] <= 'z'; i++) duzen[i] = b[i];
+    if (i > 0) duzen[i] = 0;
+}
 
 static int x_hazir(void) {
     struct sockaddr_un a;
@@ -29,7 +45,7 @@ static int x_hazir(void) {
 
 int main(int argc, char** argv, char** envp) {
     /* TCP taşıması derlemede yok (yalnızca AF_UNIX); "-nolisten tcp" yalnızca uyarı basardı */
-    char* x_arg[] = {"Xfbdev", ":0", "-dumbSched", "-noreset",
+    char* x_arg[] = {"Xfbdev", ":0", "-dumbSched", "-noreset", "-xkb-layout", duzen,
                      "-keybd", "evdev,,device=/dev/input/event0", "-mouse", "evdev,,device=/dev/input/event1", 0};
     char* wm_arg[] = {"jwm", 0};
     char** istemci = argc > 1 ? argv + 1 : wm_arg;
@@ -46,6 +62,7 @@ int main(int argc, char** argv, char** envp) {
     yeni_ortam[n++] = ortam_tampon + o;
     yeni_ortam[n] = 0;
     sc2(SYS_mkdir, "/tmp/.X11-unix", 01777);
+    duzen_oku();
     x = sys_fork();
     if (x == 0) {
         long g = sys_open("/tmp/Xfbdev.0.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);

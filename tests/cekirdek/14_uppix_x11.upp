@@ -1,20 +1,29 @@
 // Çekirdek: Uppix'te grafik arayüz. ui/derle.sh'in musl ile statik derlediği Xfbdev (X.Org
-// kdrive: /dev/fb0, evdev klavye ve fare, xkbcomp /bin/sh → ush ile çağrılır) ve JWM disk
-// imajına konur; startx X'i başlatır, soket hazır olunca JWM'yi çalıştırır. JWM açılışını
-// bitirince (tepsi, masaüstü arka planı) system.jwmrc'deki StartupCommand "jwm: masaüstü
-// hazır" yazar. xdeneme (libX11) ortada 400x300 yeşil pencere ve içinde kırmızı dikdörtgen
-// çizer; QEMU izleyicisinden gelen tuş ve fare olaylarını yazar. jwm -exit ile oturum biter,
-// startx X'i durdurur; konsol metin kipine döner. İkinci startx, öncekinden kalan kilit
-// dosyası ve soketle açılır (X sinyalle bittiğinden temizlik yapmaz) ve istemciye yanıt verir.
-// Denetim: izleyicinin screendump'larında pencere, dikdörtgen, masaüstü (#204060) ve alttaki
-// JWM tepsisi (#1E3A5F) pikselleri; X kapandıktan sonra ekranda X renkleri kalmamış, metin
-// görünüyor olmalı; ext4 kök e2fsck ile temiz çıkmalı.
+// kdrive: /dev/fb0, evdev klavye ve fare, xkbcomp /bin/sh → ush ile çağrılır), JWM ve
+// kullanici/x11 programları disk imajına konur; startx X'i başlatır, soket hazır olunca
+// JWM'yi çalıştırır. JWM açılışını bitirince (şerit, masaüstü degradesi) system.jwmrc'deki
+// StartupCommand "jwm: masaüstü hazır" yazar.
+// - xdeneme (libX11): ortada yeşil pencere ve kırmızı dikdörtgen; QEMU izleyicisinden gelen
+//   tuş ve fare olayları.
+// - uterm: /dev/ptmx'ten PTY açar, çocukta etkileşimli /bin/sh çalıştırır; çekirdek o PTY'de
+//   bir uppsh oturumu başlatır. İzleyiciden yazılan komutların (echo, ls /dev/pts, pwd)
+//   çıktısı uçbirim ızgarasındadır; exit ile oturum biter, uterm ekranı stdout'a döker.
+// - Masaüstüne tıklayınca kök menü açılır (ekran görüntüsünde menü pikselleri).
+// - ayarlar --uygula: tema, saat biçimi ve klavye düzeni yazılır, düzen XKB ile yüklenir,
+//   jwm -reload ile yeni tema görünür.
+// - oturum cikis: onay penceresinde Enter → jwm -exit, startx X'i durdurur. İkinci startx
+//   öncekinden kalan kilit ve soketle açılır; konsol metin kipine döner.
+// - Son olarak oturum kapat: Enter → reboot(2) POWER_OFF ile makine kapanır.
+// Denetim: screendump'larda pencere, masaüstü degradesi, şerit, uçbirim, menü ve yeni tema
+// pikselleri; X kapandıktan sonra ekranda metin; ext4 kök e2fsck ile temiz çıkmalı.
 // ui/derle.sh ilk kez kaynakları indirip derler (uzun sürer); sonra önbellekten hemen biter.
 // @gerek: cc make python3 curl xz bzip2 mkfs.ext4 e2fsck debugfs sfdisk mkfs.fat fsck.fat mcopy
 // @hazirla: sh ui/derle.sh > /tmp/upp_ui_derle.log 2>&1 || { tail -n 20 /tmp/upp_ui_derle.log; false; }
-// @hazirla: rm -rf tests/_cikti/x11_img && rm -f /tmp/upp_x11_1.ppm /tmp/upp_x11_2.ppm /tmp/upp_x11_3.ppm
+// @hazirla: rm -rf tests/_cikti/x11_img && rm -f /tmp/upp_x11_*.ppm
+// @sure: 400
 // @bayrak: --onyukleyici limine --qemu-izleyici --disk tests/_cikti/x11_img/uppix.img --disk-hazirla disk_yap.sh
-// @girdi: ls /usr/bin/Xfbdev /usr/bin/jwm /usr/bin/xkbcomp /usr/bin/xdeneme /usr/bin/ush /usr/bin/startx
+// @girdi: ls /usr/bin/Xfbdev /usr/bin/jwm /usr/bin/xkbcomp /usr/bin/uterm /usr/bin/ayarlar /usr/bin/oturum /usr/bin/xdeneme /usr/bin/ush /usr/bin/startx
+// @girdi: ls /dev/ptmx /dev/pts
 // @girdi: startx &
 // @bekle: jwm: masaüstü hazır
 // @girdi: export DISPLAY=:0
@@ -26,9 +35,69 @@
 // @girdi: mouse_button 1
 // @girdi: mouse_button 0
 // @bekle: xdeneme: bitti
-// @girdi: screendump /tmp/upp_x11_2.ppm
 // @girdi_kacis: \x01c
-// @girdi: jwm -exit
+// @girdi: uterm --dokum &
+// @bekle: uterm: hazır
+// @girdi_kacis: \x01csendkey e
+// @girdi: sendkey c
+// @girdi: sendkey h
+// @girdi: sendkey o
+// @girdi: sendkey spc
+// @girdi: sendkey p
+// @girdi: sendkey t
+// @girdi: sendkey y
+// @girdi: sendkey minus
+// @girdi: sendkey t
+// @girdi: sendkey a
+// @girdi: sendkey m
+// @girdi: sendkey a
+// @girdi: sendkey m
+// @girdi: sendkey ret
+// @girdi: sendkey l
+// @girdi: sendkey s
+// @girdi: sendkey spc
+// @girdi: sendkey slash
+// @girdi: sendkey d
+// @girdi: sendkey e
+// @girdi: sendkey v
+// @girdi: sendkey slash
+// @girdi: sendkey p
+// @girdi: sendkey t
+// @girdi: sendkey s
+// @girdi: sendkey ret
+// @girdi: sendkey p
+// @girdi: sendkey w
+// @girdi: sendkey d
+// @girdi: sendkey ret
+// @girdi_kacis: \x01c
+// @girdi: sleep 4; echo bekle""di_1
+// @bekle: bekledi_1
+// @girdi_kacis: \x01cscreendump /tmp/upp_x11_4.ppm
+// @girdi: sendkey e
+// @girdi: sendkey x
+// @girdi: sendkey i
+// @girdi: sendkey t
+// @girdi: sendkey ret
+// @bekle: uterm: bitti
+// @girdi: mouse_button 1
+// @girdi: mouse_button 0
+// @girdi_kacis: \x01c
+// @girdi: sleep 2; echo bekle""di_2
+// @bekle: bekledi_2
+// @girdi_kacis: \x01cscreendump /tmp/upp_x11_5.ppm
+// @girdi: sendkey esc
+// @girdi_kacis: \x01c
+// @girdi: ayarlar --uygula 1 1 tr
+// @bekle: ayarlar: tema Orman
+// @girdi: cat /etc/X11/klavye /etc/jwm/ayarlar
+// @girdi: sleep 10; echo bekle""di_3
+// @bekle: bekledi_3
+// @girdi_kacis: \x01cscreendump /tmp/upp_x11_6.ppm
+// @girdi_kacis: \x01c
+// @girdi: oturum cikis
+// @bekle: oturum: soruldu (cikis)
+// @girdi_kacis: \x01csendkey ret
+// @girdi_kacis: \x01c
 // @bekle: startx: oturum bitti
 // @girdi: startx /usr/bin/ush -c "jwm -exit && echo ikinci oturum: X yanıt verdi"; echo "ikinci startx kod=$?"
 // @bekle: ikinci startx kod=
@@ -38,8 +107,11 @@
 // @bekle: metin kipi geri geldi
 // @girdi_kacis: \x01cscreendump /tmp/upp_x11_3.ppm
 // @girdi_kacis: \x01c
-// @girdi: poweroff
+// @girdi: startx /usr/bin/oturum kapat
+// @bekle: oturum: soruldu (kapat)
+// @girdi_kacis: \x01csendkey ret
 // @icerir: /usr/bin/startx
+// @icerir: /dev/ptmx
 // @icerir: startx: X hazır (:0)
 // @icerir: jwm: masaüstü hazır
 // @icerir: xdeneme: ekran 1280x800 derinlik 24
@@ -47,16 +119,25 @@
 // @icerir: xdeneme: tuş a
 // @icerir: xdeneme: fare tuşu 1
 // @icerir: xdeneme: bitti
+// @icerir: uterm| pty-tamam
+// @icerir: uterm| 0
+// @icerir: uterm| /root
+// @icerir: uterm: bitti
+// @icerir: ayarlar: tema Orman, saat %H:%M:%S, klavye tr
+// @icerir: oturum: cikis
 // @icerir: startx: oturum bitti
 // @icerir: ikinci oturum: X yanıt verdi
 // @icerir: ikinci startx kod=0
 // @icerir: konsol: KDGETMODE 0 KDGKBMODE 1
 // @icerir: metin kipi geri geldi
+// @icerir: oturum: kapat
 // @icerir: Sistem kapatılıyor...
-// @denetle: python3 -c "d=open('/tmp/upp_x11_1.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(500,320,(220,0,0)),(585,375,(220,0,0)),(445,255,(0,160,0)),(835,545,(0,160,0)),(700,320,(0,160,0)),(100,100,(32,64,96)),(1200,700,(32,64,96)),(435,400,(32,64,96)),(900,790,(30,58,95)),(200,798,(30,58,95)),(900,770,(32,64,96))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; print('pencere ve tepsi tamam')"
-// @denetle: python3 -c "d=open('/tmp/upp_x11_2.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(500,320,(32,64,96)),(445,255,(32,64,96)),(835,545,(32,64,96)),(900,790,(30,58,95))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; print('pencere kapandı')"
-// @denetle: python3 -c "d=open('/tmp/upp_x11_3.ppm','rb').read(); p=d.split(b'\n',3); q=p[3]; r=set(tuple(q[i:i+3]) for i in range(0,len(q),3)); assert not r & {(32,64,96),(30,58,95),(0,160,0),(220,0,0)}, r; assert len(r) > 1, r; print('metin kipi tamam')"
-// @denetle: rm -f /tmp/upp_x11_1.ppm /tmp/upp_x11_2.ppm /tmp/upp_x11_3.ppm
+// @denetle: python3 -c "d=open('/tmp/upp_x11_1.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(500,320,(220,0,0)),(585,375,(220,0,0)),(445,255,(0,160,0)),(835,545,(0,160,0)),(100,5,(16,27,46)),(1200,5,(16,27,46)),(900,787,(33,48,70))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; a=o(100,770); assert a[2]>140 and a[2]>a[0], a; print('pencere, masaustu degradesi ve serit tamam')"
+// @denetle: python3 -c "import collections; d=open('/tmp/upp_x11_4.ppm','rb').read(); q=d.split(b'\n',3)[3]; c=collections.Counter(q[i:i+3] for i in range(0,len(q),3)); n=lambda r: c[bytes(r)]; s=(n((20,26,34)),n((216,222,233)),n((165,224,117))); assert s[0]>100000 and s[1]>300 and s[2]>100, s; print('ucbirim tamam', s)"
+// @denetle: python3 -c "import collections; d=open('/tmp/upp_x11_5.ppm','rb').read(); q=d.split(b'\n',3)[3]; c=collections.Counter(q[i:i+3] for i in range(0,len(q),3)); n=lambda r: c[bytes(r)]; s=n((243,245,248)); assert s>15000, s; print('menu tamam', s)"
+// @denetle: python3 -c "d=open('/tmp/upp_x11_6.ppm','rb').read(); p=d.split(b'\n',3); w=int(p[1].split()[0]); o=lambda x,y: tuple(p[3][(y*w+x)*3:(y*w+x)*3+3]); b=[(100,5,(14,34,25)),(900,787,(33,56,44))]; k=[(x,y,o(x,y),r) for x,y,r in b if o(x,y)!=r]; assert not k, k; print('Orman temasi tamam')"
+// @denetle: python3 -c "d=open('/tmp/upp_x11_3.ppm','rb').read(); q=d.split(b'\n',3)[3]; r=set(tuple(q[i:i+3]) for i in range(0,len(q),3)); assert not r & {(16,27,46),(14,34,25),(243,245,248),(20,26,34),(0,160,0),(220,0,0)}, r; assert len(r) > 1, r; print('metin kipi tamam')"
+// @denetle: rm -f /tmp/upp_x11_*.ppm
 // @denetle: dd if=tests/_cikti/x11_img/uppix.img of=/tmp/upp_x11_p2.img bs=1M skip=65 status=none && e2fsck -fn /tmp/upp_x11_p2.img && rm -f /tmp/upp_x11_p2.img
 
 kullan "../../kaynak/uppix.upp";

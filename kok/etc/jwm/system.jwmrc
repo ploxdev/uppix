@@ -1,105 +1,26 @@
 <?xml version="1.0"?>
-<!-- Uppix: JWM 2.4 ayarları (startx JWM'yi bununla başlatır; kişisel ayarlar ~/.jwmrc'ye).
-     Yazı tipi X sunucusunun gömülü "fixed" yazı tipidir (Xft yok). Bu yazı tipi ISO 8859-1'dir
-     ve JWM metni dönüştürmeden çizer: ş, ğ, ı gibi harfler bozuk görünür, bu yüzden aşağıdaki
-     etiketler ASCII'dir. Menü masaüstüne sol ya da sağ tıklayınca, tepsideki "Uppix"
-     düğmesiyle ya da Alt-F1 ile açılır. -->
+<!-- Uppix: JWM 2.4 ayarları (startx JWM'yi bununla başlatır). Görünüm (şerit, renkler,
+     masaüstü degradesi, saat biçimi) ayarlar programının yazdığı tema.jwmrc'dedir; burada
+     menüler, kısayollar ve fare bağlamaları durur. Yazı tipi X sunucusunun gömülü "fixed"
+     yazı tipidir (Xft yok, ISO 8859-1): JWM yamalıdır, UTF-8 metni çizerken çevirir
+     (ü, ö, ç doğru; ş, ğ, ı → s, g, i). -->
 <JWM>
     <RootMenu onroot="13" label="Uppix">
+        <Program label="Terminal">/usr/bin/uterm</Program>
+        <Program label="Ayarlar">/usr/bin/ayarlar</Program>
         <Program label="Test penceresi (xdeneme)">/usr/bin/xdeneme</Program>
         <Separator/>
         <Desktops label="Masalar"/>
-        <Separator/>
         <Restart label="JWM'yi yenile"/>
-        <Exit label="Oturumu kapat" confirm="false"/>
+        <Separator/>
+        <Program label="Oturumu kapat">/usr/bin/oturum cikis</Program>
+        <Program label="Yeniden başlat">/usr/bin/oturum yeniden</Program>
+        <Program label="Kapat">/usr/bin/oturum kapat</Program>
     </RootMenu>
 
-    <!-- Alt şerit: menü düğmesi, iki masanın küçük görünümü, pencere listesi, saat (UTC). -->
-    <Tray x="0" y="-1" height="24" autohide="off">
-        <TrayButton label="Uppix">root:1</TrayButton>
-        <Spacer width="4"/>
-        <Pager labeled="true"/>
-        <Spacer width="4"/>
-        <TaskList maxwidth="200"/>
-        <Clock format="%H:%M"/>
-    </Tray>
+    <Include>/etc/jwm/tema.jwmrc</Include>
 
-    <WindowStyle>
-        <Font>fixed</Font>
-        <Width>3</Width>
-        <Height>18</Height>
-        <Corner>0</Corner>
-        <Foreground>#D0D0D0</Foreground>
-        <Background>#404040</Background>
-        <Outline>#000000</Outline>
-        <Active>
-            <Foreground>#FFFFFF</Foreground>
-            <Background>#2A5D8A</Background>
-            <Outline>#000000</Outline>
-        </Active>
-    </WindowStyle>
-
-    <TrayStyle>
-        <Font>fixed</Font>
-        <Background>#1E3A5F</Background>
-        <Foreground>#FFFFFF</Foreground>
-    </TrayStyle>
-
-    <TaskListStyle list="desktop" group="false">
-        <Font>fixed</Font>
-        <Foreground>#FFFFFF</Foreground>
-        <Background>#2B4F7A</Background>
-        <Active>
-            <Foreground>#FFFFFF</Foreground>
-            <Background>#3A6EA5</Background>
-        </Active>
-    </TaskListStyle>
-
-    <PagerStyle>
-        <Font>fixed</Font>
-        <Outline>#000000</Outline>
-        <Foreground>#2B4F7A</Foreground>
-        <Background>#1E3A5F</Background>
-        <Text>#FFFFFF</Text>
-        <Active>
-            <Foreground>#3A6EA5</Foreground>
-            <Background>#2A5D8A</Background>
-        </Active>
-    </PagerStyle>
-
-    <ClockStyle>
-        <Font>fixed</Font>
-        <Foreground>#FFFFFF</Foreground>
-        <Background>#1E3A5F</Background>
-    </ClockStyle>
-
-    <MenuStyle>
-        <Font>fixed</Font>
-        <Foreground>#000000</Foreground>
-        <Background>#E8E8E8</Background>
-        <Outline>#404040</Outline>
-        <Active>
-            <Foreground>#FFFFFF</Foreground>
-            <Background>#2A5D8A</Background>
-        </Active>
-    </MenuStyle>
-
-    <PopupStyle>
-        <Font>fixed</Font>
-        <Foreground>#000000</Foreground>
-        <Background>#FFFFE0</Background>
-        <Outline>#000000</Outline>
-    </PopupStyle>
-
-    <!-- İki masa; ikisinin de arka planı aynı düz renk. Background, Desktop'lardan önce
-         gelmeli: JWM masa sayısı kadar Desktop okuyunca gerisini atlar. -->
-    <Desktops width="2" height="1">
-        <Background type="solid">#204060</Background>
-        <Desktop name="1"/>
-        <Desktop name="2"/>
-    </Desktops>
-
-    <!-- JWM açılışını (tepsi, arka plan) bitirince çalışır; startx'in konsoluna yazar. -->
+    <!-- JWM açılışını (şerit, arka plan) bitirince çalışır; startx'in konsoluna yazar. -->
     <StartupCommand>echo "jwm: masaüstü hazır"</StartupCommand>
 
     <FocusModel>click</FocusModel>
@@ -128,6 +49,8 @@
     <Key mask="A" key="#">desktop#</Key>
     <Key mask="CA" key="Right">rdesktop</Key>
     <Key mask="CA" key="Left">ldesktop</Key>
+    <Key mask="CA" key="t">exec:/usr/bin/uterm</Key>
+    <Key mask="CA" key="Delete">exec:/usr/bin/oturum</Key>
 
     <!-- JWM 2.4'te fare bağlamalarının varsayılanı yoktur: bunlar olmadan pencereler
          başlıktan taşınamaz, köşe düğmeleri çalışmaz. -->

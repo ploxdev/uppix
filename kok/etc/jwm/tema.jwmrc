@@ -1,0 +1,100 @@
+<?xml version="1.0"?>
+<!-- ayarlar programinin yazdigi tema (Gece); her "Uygula"da yeniden yazilir. -->
+<JWM>
+    <Tray x="0" y="-1" height="26" autohide="off">
+        <TrayButton label="Uppix" popup="Uygulamalar">root:1</TrayButton>
+        <Spacer width="2"/>
+        <TrayButton label="Terminal" popup="Terminal">exec:/usr/bin/uterm</TrayButton>
+        <Spacer width="4"/>
+        <Pager labeled="true"/>
+        <Spacer width="4"/>
+        <TaskList maxwidth="220"/>
+        <Clock format="%H:%M"/>
+        <Spacer width="2"/>
+        <TrayButton label="Oturum" popup="Oturumu kapat, yeniden baslat, kapat">exec:/usr/bin/oturum</TrayButton>
+    </Tray>
+
+    <WindowStyle>
+        <Font>fixed</Font>
+        <Width>4</Width>
+        <Height>20</Height>
+        <Corner>5</Corner>
+        <Foreground>#E6EAF0</Foreground>
+        <Background>#626C7A:#434A55</Background>
+        <Outline>#10151E</Outline>
+        <Active>
+            <Foreground>#FFFFFF</Foreground>
+            <Background>#4A8FE7:#2A5D9A</Background>
+            <Outline>#0C1A2C</Outline>
+        </Active>
+    </WindowStyle>
+
+    <TrayStyle>
+        <Font>fixed</Font>
+        <Background>#2C3E58:#172234</Background>
+        <Foreground>#FFFFFF</Foreground>
+    </TrayStyle>
+
+    <TrayButtonStyle>
+        <Font>fixed</Font>
+        <Foreground>#FFFFFF</Foreground>
+        <Background>#375C8D:#1E385A</Background>
+        <Active>
+            <Foreground>#FFFFFF</Foreground>
+            <Background>#3A7BD5</Background>
+        </Active>
+    </TrayButtonStyle>
+
+    <TaskListStyle list="desktop" group="false">
+        <Font>fixed</Font>
+        <Foreground>#E6EAF0</Foreground>
+        <Background>#2C3E58:#172234</Background>
+        <Active>
+            <Foreground>#FFFFFF</Foreground>
+            <Background>#4A8FE7:#2A5D9A</Background>
+        </Active>
+    </TaskListStyle>
+
+    <PagerStyle>
+        <Font>fixed</Font>
+        <Outline>#0A0F18</Outline>
+        <Foreground>#434A55</Foreground>
+        <Background>#172234</Background>
+        <Text>#FFFFFF</Text>
+        <Active>
+            <Foreground>#4A8FE7</Foreground>
+            <Background>#2A5D9A</Background>
+        </Active>
+    </PagerStyle>
+
+    <ClockStyle>
+        <Font>fixed</Font>
+        <Foreground>#FFFFFF</Foreground>
+        <Background>#2C3E58:#172234</Background>
+    </ClockStyle>
+
+    <MenuStyle>
+        <Font>fixed</Font>
+        <Foreground>#1C2430</Foreground>
+        <Background>#F3F5F8</Background>
+        <Outline>#5A6575</Outline>
+        <Active>
+            <Foreground>#FFFFFF</Foreground>
+            <Background>#4A8FE7:#2A5D9A</Background>
+        </Active>
+    </MenuStyle>
+
+    <PopupStyle>
+        <Font>fixed</Font>
+        <Foreground>#1C2430</Foreground>
+        <Background>#FFFBE6</Background>
+        <Outline>#5A6575</Outline>
+    </PopupStyle>
+
+    <!-- Background, Desktop'lardan once: JWM masa sayisi kadar Desktop okuyunca gerisini atlar -->
+    <Desktops width="2" height="1">
+        <Background type="gradient">#101B2E:#35679C</Background>
+        <Desktop name="1"/>
+        <Desktop name="2"/>
+    </Desktops>
+</JWM>

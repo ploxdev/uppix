@@ -1,6 +1,7 @@
 #!/bin/sh
 # Uppix grafik arayüzü: musl ile statik Xfbdev (xorg-server kdrive), xkbcomp, JWM ve
-# libX11 test istemcisi. Linux'ta ya da WSL'de çalışır:
+# kullanici/x11 altındaki libX11 programları (uterm, ayarlar, oturum, xdeneme). Linux'ta ya
+# da WSL'de çalışır:
 #
 #   sh ui/derle.sh
 #
@@ -92,7 +93,7 @@ adim() {
 for ad in $(echo "$PAKETLER" | awk 'NF { print $1 }'); do indir "$ad"; done
 
 # ---- sonuç güncel mi ----
-ozet_hepsi=$( (echo "$PAKETLER" "$SURUM"; cat "$0" "$BURA"/ui/pkg-config "$BURA"/ui/yama/*/* "$BURA"/ui/xkb/* "$BURA"/kullanici/x11/*.c 2>/dev/null) | sha256sum | cut -d' ' -f1)
+ozet_hepsi=$( (echo "$PAKETLER" "$SURUM"; cat "$0" "$BURA"/ui/pkg-config "$BURA"/ui/yama/*/* "$BURA"/ui/xkb/* "$BURA"/kullanici/x11/*.c "$BURA"/kullanici/x11/*.h 2>/dev/null) | sha256sum | cut -d' ' -f1)
 if [ -f "$KUR/.ozet" ] && [ "$(cat "$KUR/.ozet")" = "$ozet_hepsi" ]; then
     bilgi "güncel: $KUR"
     exit 0
@@ -146,6 +147,10 @@ kaynak_duzelt() {
             sed -i 's/if ((cooked = BufFilePushZIP (raw)))/if (0 \&\& (cooked = BufFilePushZIP (raw)))/' src/builtins/file.c || return 1
             grep -q "if (0 && (cooked = BufFilePushZIP" src/builtins/file.c || return 1
             ;;
+        jwm)
+            # çekirdek yazı tipi ISO 8859-1: metin çizimden önce UTF-8'den çevrilir
+            python3 "$BURA/ui/yama/jwm/latin1.py" src/font.c || return 1
+            ;;
         xorg-server)
             # kdrive glibc'ye özgü __uid_t/__gid_t türlerini kullanır
             sed -i 's/__uid_t/uid_t/g; s/__gid_t/gid_t/g' hw/kdrive/linux/linux.c || return 1
@@ -158,8 +163,9 @@ kaynak_duzelt() {
 configure_sonrasi() {
     case "$1" in
         jwm)
-            # JWM kütüphaneleri LDFLAGS'e yalnızca -lX11 olarak koyar; statik libX11 xcb ister
-            sed -i 's/ -lX11/ -lX11 -lxcb -lXau/' src/Makefile || return 1
+            # JWM kütüphaneleri LDFLAGS'e koyar (-lX11 ... -lXext); statik bağlamada libXext'ten
+            # sonra yine libX11, onun da ardından xcb gerekir
+            sed -i 's/^LDFLAGS = \(.*\)$/LDFLAGS = \1 -lX11 -lxcb -lXau/' src/Makefile || return 1
             ;;
     esac
     return 0
@@ -179,13 +185,16 @@ autotools() {
     rm -f "$KOK"/usr/lib/*.la
 }
 
+# Damga, paketin seçeneklerinin ve yamalarının (ui/yama/<paket>) özetini tutar: biri
+# değişince paket yeniden derlenir. Boş damga (eski biçim) geçerli sayılır.
 paket() {
     ad=$1
     shift
-    if bitti_mi "$ad"; then return 0; fi
+    imza=$( (printf '%s\n' "$@"; cat "$BURA"/ui/yama/"$ad"/* 2>/dev/null) | sha256sum | cut -c1-16)
+    if bitti_mi "$ad" && { [ ! -s "$IS/damga/$ad" ] || [ "$(cat "$IS/damga/$ad")" = "$imza" ]; }; then return 0; fi
     bilgi "$ad"
     adim "$ad" autotools "$ad" "$@"
-    bitir "$ad"
+    echo "$imza" > "$IS/damga/$ad"
 }
 
 # yerine-koyucular: libsha1, zlib, pthread-stubs
@@ -255,17 +264,17 @@ paket xorg-server \
     --with-xkb-path=/usr/share/X11/xkb --with-xkb-bin-directory=/usr/bin --with-xkb-output=/tmp \
     --with-default-xkb-rules=evdev --with-default-xkb-model=pc105 --with-default-xkb-layout=us
 
-paket jwm LIBS="-lxcb -lXau" --x-includes="$KOK/usr/include" --x-libraries="$KOK/usr/lib" --disable-xft --disable-xrender --disable-png --disable-jpeg --disable-xpm --disable-cairo \
-    --disable-rsvg --disable-fribidi --disable-xinerama --disable-xmu --disable-shape --disable-nls --disable-confirm \
+paket jwm LIBS="-lX11 -lxcb -lXau" --x-includes="$KOK/usr/include" --x-libraries="$KOK/usr/lib" --disable-xft --disable-xrender --disable-png --disable-jpeg --disable-xpm --disable-cairo \
+    --disable-rsvg --disable-fribidi --disable-xinerama --disable-xmu --disable-nls --disable-confirm \
     --sysconfdir=/etc/jwm
 
-# libX11 test istemcisi
+# kullanici/x11/*.c: libX11 programları (ortak başlık arayuz.h)
 istemci_derle() {
     for c in "$BURA"/kullanici/x11/*.c; do
         musl-gcc $CFLAGS $CPPFLAGS -o "$IS/$(basename "$c" .c)" "$c" $LDFLAGS -lX11 -lxcb -lXau || return 1
     done
 }
-bilgi "test istemcisi"
+bilgi "X programları (uterm, ayarlar, oturum, xdeneme)"
 adim istemci istemci_derle
 
 # ---- Uppix'e girecekler ----
