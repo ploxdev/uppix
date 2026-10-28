@@ -91,11 +91,12 @@
         <Outline>#000000</Outline>
     </PopupStyle>
 
-    <!-- İki masa; ikisinin de arka planı aynı düz renk. -->
+    <!-- İki masa; ikisinin de arka planı aynı düz renk. Background, Desktop'lardan önce
+         gelmeli: JWM masa sayısı kadar Desktop okuyunca gerisini atlar. -->
     <Desktops width="2" height="1">
+        <Background type="solid">#204060</Background>
         <Desktop name="1"/>
         <Desktop name="2"/>
-        <Background type="solid">#204060</Background>
     </Desktops>
 
     <!-- JWM açılışını (tepsi, arka plan) bitirince çalışır; startx'in konsoluna yazar. -->
