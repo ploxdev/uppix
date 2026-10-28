@@ -1,5 +1,7 @@
-# Disk imajına giren dosyalar ve kabuk betikleri her platformda LF kalmalı.
+# Files that go into the disk image and shell scripts must stay LF on every platform.
 *.sh text eol=lf
 kok/** text eol=lf
+# Windows batch files need CRLF.
+*.cmd text eol=crlf
 onyukleyici/limine/*.sys binary
 onyukleyici/limine/*.EFI binary

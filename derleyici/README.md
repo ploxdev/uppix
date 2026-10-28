@@ -1,14 +1,15 @@
-# U++ derleyicisi (sabitlenmiş kopya)
+# U++ compiler (pinned copy)
 
-`uppc.c`, [U++](https://github.com/ploxdev/upp-lang) derleyicisinin tek dosyalık C
-bootstrap'ıdır (`bootstrap/uppc.c`). Çekirdek hedefi (`--hedef cekirdek`) ve serbest
-çalışma zamanı derleyiciye gömülüdür; Uppix'i derlemek için başka bir şey gerekmez.
+`uppc.c` is the single-file C bootstrap (`bootstrap/uppc.c`) of the
+[U++](https://github.com/ploxdev/upp-lang) compiler. The kernel target (`--hedef cekirdek`) and the
+freestanding runtime are built into the compiler, so nothing else is needed to build Uppix.
 
-Kaynak: `ploxdev/upp-lang`, beta dalı, `c744c3c` commit'i (`bootstrap/uppc.c`; içerdiği `src/runtime/upp_runtime.c` bu dosyaya gömüldü).
-Derleyici geliştirmesi U++ deposunda yapılır; yeni bir sürüm gerektiğinde bu dosya
-U++'ın `bootstrap/uppc.c` dosyasıyla değiştirilir.
+Source: `ploxdev/upp-lang`, `beta` branch, commit `c744c3c` (`bootstrap/uppc.c`; the
+`src/runtime/upp_runtime.c` it includes is inlined into this file).
+Compiler development happens in the U++ repository; when Uppix needs a newer version, this file is
+replaced with U++'s `bootstrap/uppc.c`.
 
-## Derleme
+## Building
 
 ```bash
 # Linux
@@ -17,4 +18,4 @@ gcc -std=gnu11 -O2 derleyici/uppc.c -o derleyici/uppc -pthread -lm
 gcc -std=gnu11 -O2 derleyici/uppc.c -o derleyici/uppc.exe -luser32 -lwinmm -lgdi32
 ```
 
-ya da `sh derleyici/kur.sh` (Linux/WSL) / `derleyici\kur.cmd` (Windows).
+or `sh derleyici/kur.sh` (Linux/WSL) / `derleyici\kur.cmd` (Windows).
