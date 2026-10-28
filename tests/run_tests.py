@@ -21,6 +21,7 @@ Kaynak yorumları:
   // @gerek: araç...  cekirdek/: bu komutlar POSIX kabukta yoksa test atlanır
   // @hazirla: KOMUT  cekirdek/: derlemeden önce POSIX kabukta çalışır (ör. disk imajı)
   // @denetle: KOMUT  cekirdek/: QEMU kapandıktan sonra çalışır; 0 dışı çıkış = başarısız
+  // @sure: SANİYE     cekirdek/: QEMU oturumunun en uzun süresi (varsayılan 120)
   POSIX kabuk: Linux'ta sh, Windows'ta WSL. UPP_FS_ARACLAR ortam değişkeni
   (dosfstools/mtools/exfatprogs paketlerinin açıldığı dizin) FS_ARACLAR olarak geçer.
 
@@ -124,6 +125,7 @@ class Meta:
     gerek: List[str] = field(default_factory=list)
     hazirla: List[str] = field(default_factory=list)
     denetle: List[str] = field(default_factory=list)
+    sure: float = 0.0
 
 
 def meta_oku(kaynak: str, yol: str) -> Meta:
@@ -175,6 +177,10 @@ def meta_oku(kaynak: str, yol: str) -> Meta:
         if s.startswith("// @hazirla:"):
             stdout_mod = False
             meta.hazirla.append(s.split(":", 1)[1].strip())
+            continue
+        if s.startswith("// @sure:"):
+            stdout_mod = False
+            meta.sure = float(s.split(":", 1)[1].strip())
             continue
         if s.startswith("// @denetle:"):
             stdout_mod = False
@@ -468,6 +474,7 @@ def calistir_cekirdek(uppc: str, yol: str, meta: Meta, cikti_dir: str, timeout: 
         if kod != 0:
             return Sonuc("cekirdek", ad, False, "@hazirla başarısız: " + komut + "\n" + cik)
     stem = os.path.join(cikti_dir, "ck_" + os.path.splitext(os.path.basename(yol))[0])
+    sure = max(timeout, 120.0, meta.sure)
     girdi = "".join(g + "\n" for g in meta.girdi)
     # stdin çekirdek kapanana kadar açık kalmalı: EOF'ta wsl/QEMU hemen sonlanır.
     cikti_yol = stem + ".konsol"
@@ -481,12 +488,12 @@ def calistir_cekirdek(uppc: str, yol: str, meta: Meta, cikti_dir: str, timeout: 
         )
         try:
             if any(t == "bekle" for t, _ in meta.adim):
-                if not _adimlari_gonder(proc, meta.adim, cikti_yol, max(timeout, 120.0)):
-                    raise subprocess.TimeoutExpired(uppc, max(timeout, 120.0))
+                if not _adimlari_gonder(proc, meta.adim, cikti_yol, sure):
+                    raise subprocess.TimeoutExpired(uppc, sure)
             elif girdi:
                 proc.stdin.write(girdi.encode("utf-8"))
                 proc.stdin.flush()
-            proc.wait(timeout=max(timeout, 120.0))
+            proc.wait(timeout=sure)
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()

@@ -7,10 +7,6 @@ harita[metin, fonk(liste[metin], metin) -> sayi] g_komut;
 harita[metin, metin] g_komut_aciklama;
 harita[metin, metin] g_ortam;
 harita[metin, metin] g_takma;
-sayi g_son_kod = 0;
-liste[metin] g_konum;
-mantik g_cik = yanlis;
-sayi g_cik_kod = 0;
 sayi g_betik_derinlik = 0;
 
 // arka plan işleri
@@ -119,7 +115,7 @@ fonk degisken_ac(metin s, sayi i) -> sayi {
     }
     sayi c = s[i + 1];
     eger (c == 63) {
-        g_acilan = "{g_son_kod}";
+        g_acilan = "{son_kod_al()}";
         don i + 2;
     }
     eger (c == 36) {
@@ -127,20 +123,22 @@ fonk degisken_ac(metin s, sayi i) -> sayi {
         don i + 2;
     }
     eger (c == 35) {
-        sayi say = g_konum.uzunluk() - 1;
+        sayi say = konum_al().uzunluk() - 1;
         eger (say < 0) { say = 0; }
         g_acilan = "{say}";
         don i + 2;
     }
     eger (c == 64 || c == 42) {
+        liste[metin] K = konum_al();
         liste[metin] L;
-        dongu (sayi k = 1; k < g_konum.uzunluk(); k += 1) { L.ekle(g_konum[k]); }
+        dongu (sayi k = 1; k < K.uzunluk(); k += 1) { L.ekle(K[k]); }
         g_acilan = upp.metin.birlestir(L, " ");
         don i + 2;
     }
     eger (rakam_mi(c)) {
         sayi idx = c - 48;
-        eger (idx < g_konum.uzunluk()) { g_acilan = g_konum[idx]; }
+        liste[metin] K = konum_al();
+        eger (idx < K.uzunluk()) { g_acilan = K[idx]; }
         don i + 2;
     }
     eger (c == 123) {
@@ -327,23 +325,23 @@ fonk yerlesik_ad(metin icerik) -> metin {
 }
 
 fonk betik_calistir(metin icerik, liste[metin] a) -> sayi {
-    liste[metin] eski = g_konum;
-    g_konum = a;
+    liste[metin] eski = konum_al();
+    konum_koy(a);
     g_betik_derinlik += 1;
     sayi kod = 0;
     her (oto l in satirlar(icerik)) {
         metin t = upp.metin.kirp(l);
         eger (t == "" || upp.metin.baslar(t, "#")) { devam; }
         kod = satir_calistir(t);
-        eger (g_cik) { dur; }
+        eger (cik_mi()) { dur; }
     }
-    eger (g_cik) {
-        kod = g_cik_kod;
-        g_cik = yanlis;
+    eger (cik_mi()) {
+        kod = cik_kod_al();
+        cik_koy(yanlis);
     }
     g_betik_derinlik -= 1;
-    g_konum = eski;
-    g_son_kod = kod;
+    konum_koy(eski);
+    son_kod_koy(kod);
     don kod;
 }
 
@@ -408,7 +406,7 @@ fonk takma_ac(liste[metin] a) -> liste[metin] {
 
 fonk boru_calistir(metin boru) -> sayi {
     liste[metin] J = jetonla(boru);
-    eger (J.uzunluk() == 0) { don g_son_kod; }
+    eger (J.uzunluk() == 0) { don son_kod_al(); }
     liste[liste[metin]] asamalar;
     liste[metin] cur;
     her (oto t in J) {
@@ -486,7 +484,7 @@ fonk boru_calistir(metin boru) -> sayi {
                 girdi = cikan;
             }
         }
-        eger (g_cik) { dur; }
+        eger (cik_mi()) { dur; }
     }
     don kod;
 }
@@ -495,7 +493,7 @@ fonk boru_calistir(metin boru) -> sayi {
 fonk vey_calistir(liste[metin] grup, liste[metin] bag) -> sayi {
     sayi kod = boru_calistir(grup[0]);
     dongu (sayi k = 1; k < grup.uzunluk(); k += 1) {
-        eger (g_cik) { dur; }
+        eger (cik_mi()) { dur; }
         metin kosul = bag[k - 1];
         eger ((kosul == "&&" && kod == 0) || (kosul == "||" && kod != 0)) {
             kod = boru_calistir(grup[k]);
@@ -506,7 +504,7 @@ fonk vey_calistir(liste[metin] grup, liste[metin] bag) -> sayi {
 
 fonk is_gorevi(sayi no) -> bos {
     sayi kod = vey_calistir(g_is_grup[no], g_is_bag[no]);
-    upp.satir_yaz("[{no + 1}]+  Bitti ({kod})  {g_is_ad[no]}");
+    konsol_satir("[{no + 1}]+  Bitti ({kod})  {g_is_ad[no]}");
 }
 
 fonk arkaplan_baslat(liste[metin] grup, liste[metin] bag) -> bos {
@@ -520,14 +518,15 @@ fonk arkaplan_baslat(liste[metin] grup, liste[metin] bag) -> bos {
     g_is_bag.ekle(bag);
     g_is_ad.ekle(ad);
     sayi pid = upp.cekirdek.gorev_baslat(is_gorevi, no, ad);
+    eger (pid >= 0) { oturum_gorev_bagla(pid, oturum_simdi()); }
     g_is_pid.ekle(pid);
     eger (pid < 0) {
         hata_bildir("uppsh: görev tablosu dolu");
-        g_son_kod = 1;
+        son_kod_koy(1);
         don;
     }
     satir("[{no + 1}] {pid}");
-    g_son_kod = 0;
+    son_kod_koy(0);
 }
 
 fonk satir_calistir(metin s) -> sayi {
@@ -535,7 +534,7 @@ fonk satir_calistir(metin s) -> sayi {
     liste[metin] grup;
     liste[metin] bag;
     sayi i = 0;
-    iken (i + 1 < P.uzunluk() && !g_cik) {
+    iken (i + 1 < P.uzunluk() && !cik_mi()) {
         metin parca = P[i];
         metin op = P[i + 1];
         i += 2;
@@ -551,27 +550,27 @@ fonk satir_calistir(metin s) -> sayi {
             eger (op == "&") {
                 arkaplan_baslat(grup, bag);
             } yoksa {
-                g_son_kod = vey_calistir(grup, bag);
+                son_kod_koy(vey_calistir(grup, bag));
             }
         }
         grup.temizle();
         bag.temizle();
     }
-    don g_son_kod;
+    don son_kod_al();
 }
 
 fonk istem_uret() -> metin {
-    metin yol = fs_yol(g_cwd);
+    metin yol = fs_yol(cwd_al());
     metin ev = ortam("HOME");
     eger (ev != "" && (yol == ev || upp.metin.baslar(yol, ev + "/"))) { yol = "~" + kes_son(yol, uz(ev)); }
     don "\e[1;32m" + ortam("USER") + "@" + ortam("HOSTNAME") + "\e[0m:\e[1;34m" + yol + "\e[0m# ";
 }
 
 fonk kabuk_dongu() -> bos {
-    iken (!g_cik) {
+    iken (!cik_mi()) {
         metin s = satir_oku(istem_uret());
         eger (g_satir_eof) {
-            upp.satir_yaz("exit");
+            konsol_satir("exit");
             dur;
         }
         metin t = upp.metin.kirp(s);

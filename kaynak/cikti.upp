@@ -50,6 +50,11 @@ fonk terminal_mi() -> mantik => yakala_yer() < 0;
 
 // Terminale yazarken her satır sonu CR+LF olur (seri terminal ham kipte).
 fonk terminale_yaz(metin s) -> bos {
+    sayi p = oturum_pty();
+    eger (p >= 0) {
+        pty_yaz(p, s);
+        don;
+    }
     eger (upp.metin.bul(s, "\n") < 0) {
         upp.yaz(s);
         don;
@@ -70,7 +75,7 @@ fonk satir(metin s) -> bos {
     sayi i = yakala_yer();
     eger (i < 0) {
         terminale_yaz(s);
-        upp.satir_yaz("");
+        konsol_satir("");
     } yoksa {
         g_yakala[i] += s + "\n";
     }
@@ -78,7 +83,7 @@ fonk satir(metin s) -> bos {
 
 fonk hata_bildir(metin s) -> bos {
     eger (g_hata_sustur) { don; }
-    upp.hata_satir_yaz(s);
+    konsol_hata(s);
 }
 
 // Renk yalnızca terminale yazılırken kullanılır.

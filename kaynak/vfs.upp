@@ -65,7 +65,6 @@ sinif Surucu {
 liste[Dugum] g_fs;
 liste[Baglama] g_bag;
 harita[metin, Surucu] g_surucu;
-sayi g_cwd = 0;
 metin g_fs_hata = "";
 sayi g_acilis_epoch = 0;
 u64 g_rastgele = 88172645463325252u64;
@@ -186,7 +185,7 @@ fonk yol_birlestir(metin a, metin b) -> metin {
 // Yolu düğüm numarasına çözer; yoksa -1.
 fonk fs_coz(metin yol) -> sayi {
     eger (yol == "") { don -1; }
-    sayi cur = g_cwd;
+    sayi cur = cwd_al();
     metin y = yol;
     eger (y == "~" || upp.metin.baslar(y, "~/")) { y = ortam("HOME") + kes_son(y, 1); }
     eger (upp.metin.baslar(y, "/")) { cur = 0; }
@@ -571,7 +570,7 @@ fonk fs_ayir_bag(sayi no) -> mantik {
             don yanlis;
         }
     }
-    eger (fs_ata_mi(nokta, g_cwd) && g_cwd != nokta) { g_cwd = nokta; }
+    oturum_cwd_tasi(nokta);
     eger (!bag_bellekte(no)) {
         Surucu s = g_surucu.al(g_bag[no].tur);
         s.ayir(no);
@@ -703,7 +702,7 @@ fonk fs_kok_kur() -> bos {
     kok.eski_yuklu = dogru;
     g_bag.ekle(kok);
     fs_dugum_ekle(0, "", D_DIZIN, 493);
-    g_cwd = 0;
+    cwd_koy(0);
 }
 
 // Kökün altındaki standart dizinler ve sanal dosya sistemleri.
@@ -732,6 +731,9 @@ fonk fs_sanal_kur() -> bos {
     g_fs[fs_aygit(dev, "tty0", "konsol")].kip = 400;
     g_fs[fs_aygit(dev, "tty1", "konsol")].kip = 400;
     fs_aygit(dev, "random", "rastgele");
+    // sözde terminaller: /dev/ptmx her açılışta yeni PTY, yavru uçlar /dev/pts altında
+    fs_aygit(dev, "ptmx", "ptmx");
+    fs_dugum_ekle(dev, "pts", D_DIZIN, 493);
     // girdi aygıtları (Linux evdev ve mousedev)
     sayi girdi = fs_dugum_ekle(dev, "input", D_DIZIN, 493);
     g_fs[fs_aygit(girdi, "event0", "olay0")].kip = 432;

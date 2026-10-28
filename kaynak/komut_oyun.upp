@@ -56,7 +56,7 @@ fonk yl_cerceve() -> bos {
 
 fonk yl_bosalt() -> bos {
     eger (g_yl_cizim == "") { don; }
-    upp.yaz(g_yl_cizim);
+    konsol_yaz(g_yl_cizim);
     g_yl_cizim = "";
 }
 
@@ -304,7 +304,7 @@ fonk k_snake(liste[metin] a, metin girdi) -> sayi {
         // Tuşlar: kare süresince gelenler sırayla işlenir. -n kipinde okunmaz,
         // böylece sonraki girdi kabuğa kalır.
         sayi c = 0;
-        eger (adim_siniri < 0) { c = upp.cekirdek.tus_oku(); }
+        eger (adim_siniri < 0) { c = konsol_tus_oku(); }
         iken (c != 0 && !cik) {
             sayi sonuc = yl_tus(c);
             // Otopilotta yönü yılan seçer: ok/WASD yok sayılır (sıradaki yön bir
@@ -314,10 +314,10 @@ fonk k_snake(liste[metin] a, metin girdi) -> sayi {
             eger (sonuc == 2) {
                 yl_alt("\e[1;93mDURAKLATILDI\e[0m — devam için bir tuş");
                 yl_bosalt();
-                upp.cekirdek.tus_bekle();
+                konsol_tus_bekle();
                 yl_alt(yl_ipucu());
             }
-            c = upp.cekirdek.tus_oku();
+            c = konsol_tus_oku();
         }
         eger (cik) { dur; }
         eger (g_yl_oto) { yl_otopilot(); }
@@ -332,7 +332,7 @@ fonk k_snake(liste[metin] a, metin girdi) -> sayi {
             eger (adim_siniri >= 0) { dur; }
             mantik karar = yanlis;
             iken (!karar) {
-                sayi t = upp.cekirdek.tus_bekle();
+                sayi t = konsol_tus_bekle();
                 eger (t == 'r' || t == 'R') {
                     karar = dogru;
                     yl_kur();
@@ -353,8 +353,8 @@ fonk k_snake(liste[metin] a, metin girdi) -> sayi {
             upp.uyut(kalan);
         }
     }
-    upp.yaz(yl_git(YL_UST + YL_Y + 2, 1) + "\e[0m\e[?25h");
-    upp.satir_yaz("snake: skor {g_yl_skor}, uzunluk {g_yl_govde.uzunluk()}, {adim} adım (rekor {g_yl_rekor})");
+    konsol_yaz(yl_git(YL_UST + YL_Y + 2, 1) + "\e[0m\e[?25h");
+    konsol_satir("snake: skor {g_yl_skor}, uzunluk {g_yl_govde.uzunluk()}, {adim} adım (rekor {g_yl_rekor})");
     eger (g_yl_rekor > ilk_rekor) { yl_rekor_yaz(g_yl_rekor); }
     don 0;
 }

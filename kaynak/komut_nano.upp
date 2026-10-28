@@ -422,6 +422,6 @@ fonk k_nano(liste[metin] a, metin girdi) -> sayi {
         g_nano_kesiyor = kesti;
         g_dz_son_tur = g_dz_tur_simdi;
     }
-    upp.yaz("\e[0m\e[H\e[2J");
+    konsol_yaz("\e[0m\e[H\e[2J");
     don 0;
 }

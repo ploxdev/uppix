@@ -40,6 +40,8 @@ sabit sayi FD_SOKET = 10;    // AF_UNIX soketi (g_fd_no: g_soket)
 sabit sayi FD_EPOLL = 11;    // epoll örneği (g_fd_no: g_epoll)
 sabit sayi FD_EVENTFD = 12;  // eventfd sayacı (g_fd_no: g_sayac)
 sabit sayi FD_TIMERFD = 13;  // timerfd (g_fd_no: g_zamanlayici)
+sabit sayi FD_PTY_ANA = 14;  // /dev/ptmx (g_fd_no: g_pty)
+sabit sayi FD_PTY_YAVRU = 15; // /dev/pts/N (g_fd_no: g_pty)
 
 sinif Surec {
     sayi pid;          // 0: boş yuva
@@ -170,6 +172,7 @@ fonk fd_nesne_al(sayi tur, sayi no) -> bos {
     eger (tur == FD_OLAY) { girdi_istemci_al(no); }
     eger (tur == FD_SOKET) { soket_ref_al(no); }
     eger (tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD) { hazir_nesne_al(tur, no); }
+    eger (tur == FD_PTY_ANA || tur == FD_PTY_YAVRU) { pty_al(tur, no); }
 }
 
 fonk fd_nesne_birak(sayi tur, sayi no) -> bos {
@@ -177,6 +180,7 @@ fonk fd_nesne_birak(sayi tur, sayi no) -> bos {
     eger (tur == FD_OLAY) { girdi_istemci_birak(no); }
     eger (tur == FD_SOKET) { soket_ref_birak(no); }
     eger (tur == FD_EPOLL || tur == FD_EVENTFD || tur == FD_TIMERFD) { hazir_nesne_birak(tur, no); }
+    eger (tur == FD_PTY_ANA || tur == FD_PTY_YAVRU) { pty_birak(tur, no); }
 }
 
 // Tanımlayıcı yuvasını yazar; eski nesnenin sayacı düşer, yeninin artar (önce artar:
@@ -241,7 +245,7 @@ fonk surec_yeni(metin ad, metin girdi) -> sayi {
     eger (girdi != yok) { y.girdi = girdi; }
     y.girdi_konum = 0;
     y.satir_artik = "";
-    y.cwd = g_cwd;
+    y.cwd = cwd_al();
     y.yol = "";
     y.umask = 18;
     y.sig_maske = 0;

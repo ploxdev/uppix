@@ -388,6 +388,8 @@ fonk sc_fork(sayi s, sayi bayrak, sayi yigin, sayi ebeveyn_tid, sayi cocuk_tid, 
     g_surec[c].gorev = g;
     g_surec_gorev.koy(g, c);
     yakala_vekil_koy(g, upp.cekirdek.gorev_kimlik());
+    // çocuk ebeveyninin oturumunda koşar (fork zinciri); eski kayıt kalmasın
+    eger (g_oturum_gorev.var_mi(g)) { g_oturum_gorev.sil(g); }
     sayi pid = g_surec[c].pid;
     sayi u = upp.tampon.yeni(4);
     upp.tampon.yaz32(u, 0, pid);
@@ -506,6 +508,10 @@ fonk surec_yurut(sayi s, sayi no, metin dosya, liste[metin] arg, liste[metin] or
         metin satir_m = betik_satiri(veri);
         // /bin/sh çekirdekteki kabuktur (uppsh): süreçler (system, popen, X'in xkbcomp'u)
         // için kullanıcı kipindeki küçük kabuk /usr/bin/ush çalışır, argv aynen geçer
+        // stdin'i PTY yavru ucu olan etkileşimli /bin/sh: o PTY'de uppsh oturumu
+        eger (satir_m == "/yerlesik/sh" && kabuk_etkilesimli_mi(arg) && g_fd_tur[fd_yer(s, 0)] == FD_PTY_YAVRU) {
+            don pty_kabuk_yurut(s, g_fd_no[fd_yer(s, 0)]);
+        }
         eger (satir_m == "/yerlesik/sh" && fs_coz("/usr/bin/ush") >= 0) {
             sayi ush = fs_coz("/usr/bin/ush");
             sayi uh = yurut_dosya_denetle(ush);

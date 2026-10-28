@@ -845,6 +845,6 @@ fonk k_vi(liste[metin] a, metin girdi) -> sayi {
         vi_komut(c, sayac);
         sayac = 0;
     }
-    upp.yaz("\e[0m\e[H\e[2J");
+    konsol_yaz("\e[0m\e[H\e[2J");
     don 0;
 }

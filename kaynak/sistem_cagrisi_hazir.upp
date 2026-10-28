@@ -161,6 +161,7 @@ fonk tty_tus_isle(sayi s, sayi c) -> sayi {
 
 // Bekleyen tuş (beklemeden); yoksa 0.
 fonk tty_tus_engelsiz() -> sayi {
+    eger (!konsol_vt_mi()) { don konsol_tus_oku(); }
     eger (g_bekleyen.uzunluk() > 0) {
         sayi c = g_bekleyen[0];
         g_bekleyen.sil(0);
@@ -174,7 +175,7 @@ mantik g_hazir_kesme = yanlis;
 // Terminal okunabilir mi: K_RAW/K_MEDIUMRAW'da ham bayt, kanonik kipte tam satır ya da
 // EOF. Tuşlar yalnızca ön plandaki süreç için işlenir. Ctrl-C g_hazir_kesme'yi kurar.
 fonk tty_okunabilir(sayi s) -> mantik {
-    eger (g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) {
+    eger (konsol_vt_mi() && g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) {
         girdi_topla();
         don g_tty_ham.uzunluk() > 0;
     }
@@ -227,6 +228,8 @@ fonk fd_hazir(sayi s, sayi fd, sayi derinlik) -> sayi {
     } yoksa eger (tur == FD_TIMERFD) {
         zamanlayici_isle(no);
         eger (g_zamanlayici[no].dolan > 0) { m = POLLIN; }
+    } yoksa eger (tur == FD_PTY_ANA || tur == FD_PTY_YAVRU) {
+        m = pty_hazir(tur, no);
     }
     eger ((m & POLLIN) != 0) { m = m | POLLRDNORM; }
     eger ((m & POLLOUT) != 0) { m = m | POLLWRNORM; }

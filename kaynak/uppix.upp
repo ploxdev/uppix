@@ -32,6 +32,7 @@ kullan "sistem_cagrisi_surec.upp";
 kullan "sistem_cagrisi_girdi.upp";
 kullan "sistem_cagrisi_soket.upp";
 kullan "sistem_cagrisi_hazir.upp";
+kullan "pty.upp";
 
 sabit metin UPPIX_SURUM = "0.4.0";
 
@@ -314,7 +315,7 @@ fonk uppix_baslat() -> bos {
     klog("uppsh: {g_komut.uzunluk()} yerleşik komut /bin altında");
     klog("görevler: işbirlikçi zamanlayıcı hazır (en çok 32 görev)");
     sistem_cagrilari_kur();
-    g_cwd = fs_coz("/root");
+    cwd_koy(fs_coz("/root"));
     liste[metin] profil_arg;
     profil_arg.ekle("source");
     profil_arg.ekle("/etc/profile");

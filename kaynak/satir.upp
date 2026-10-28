@@ -10,17 +10,19 @@ metin g_tam_satir = "";
 sayi g_tam_imlec = 0;
 
 fonk tus_al() -> sayi {
-    eger (g_bekleyen.uzunluk() > 0) {
+    eger (konsol_vt_mi() && g_bekleyen.uzunluk() > 0) {
         sayi c = g_bekleyen[0];
         g_bekleyen.sil(0);
         don c;
     }
-    don upp.cekirdek.tus_bekle();
+    don konsol_tus_bekle();
 }
 
 // Ön plandaki komut çalışırken Ctrl-C'yi yakalar; diğer tuşlar sonraya saklanır.
 fonk kesme_istendi_mi() -> mantik {
-    eger (upp.cekirdek.gorev_kimlik() != 1) { don yanlis; }
+    sayi o = oturum_simdi();
+    eger (upp.cekirdek.gorev_kimlik() != g_oturum[o].gorev) { don yanlis; }
+    eger (g_oturum[o].pty >= 0) { don pty_kesme_var_mi(g_oturum[o].pty); }
     mantik kes_var = yanlis;
     sayi c = upp.cekirdek.tus_oku();
     iken (c != 0) {
@@ -39,9 +41,9 @@ fonk gecmis_ekle(metin s) -> bos {
 }
 
 fonk satir_ciz(metin istem, metin s, sayi imlec) -> bos {
-    upp.yaz("\r" + istem + s + "\e[K");
+    konsol_yaz("\r" + istem + s + "\e[K");
     sayi geri = uz(s) - imlec;
-    eger (geri > 0) { upp.yaz("\e[{geri}D"); }
+    eger (geri > 0) { konsol_yaz("\e[{geri}D"); }
 }
 
 fonk ortak_onek(liste[metin] L) -> metin {
@@ -102,10 +104,10 @@ fonk tamamla(metin istem, metin s, sayi imlec) -> bos {
         eger (uz(ortak) > uz(kelime)) {
             yeni = ortak;
         } yoksa {
-            upp.satir_yaz("");
+            konsol_satir("");
             metin sat = "";
             her (oto a in adaylar) { sat += a + "  "; }
-            upp.satir_yaz(sat);
+            konsol_satir(sat);
             satir_ciz(istem, s, imlec);
             don;
         }
@@ -117,7 +119,7 @@ fonk tamamla(metin istem, metin s, sayi imlec) -> bos {
 fonk satir_oku(metin istem) -> metin {
     g_satir_eof = yanlis;
     g_satir_kesildi = yanlis;
-    upp.yaz(istem);
+    konsol_yaz(istem);
     metin s = "";
     sayi imlec = 0;
     sayi gi = g_gecmis.uzunluk();
@@ -125,17 +127,17 @@ fonk satir_oku(metin istem) -> metin {
     iken (dogru) {
         sayi c = tus_al();
         eger (c == 10 || c == 13) {
-            upp.satir_yaz("");
+            konsol_satir("");
             don s;
         }
         eger (c == 3) {
-            upp.satir_yaz("^C");
+            konsol_satir("^C");
             g_satir_kesildi = dogru;
             don "";
         }
         eger (c == 4) {
             eger (s == "") {
-                upp.satir_yaz("");
+                konsol_satir("");
                 g_satir_eof = dogru;
                 don "";
             }
@@ -150,7 +152,7 @@ fonk satir_oku(metin istem) -> metin {
             devam;
         }
         eger (c == 12) {
-            upp.cekirdek.ekran_temizle();
+            konsol_temizle();
             satir_ciz(istem, s, imlec);
             devam;
         }
@@ -224,12 +226,12 @@ fonk satir_oku(metin istem) -> metin {
             } yoksa eger (kod == 67) {
                 eger (imlec < uz(s)) {
                     imlec += 1;
-                    upp.yaz("\e[C");
+                    konsol_yaz("\e[C");
                 }
             } yoksa eger (kod == 68) {
                 eger (imlec > 0) {
                     imlec -= 1;
-                    upp.yaz("\e[D");
+                    konsol_yaz("\e[D");
                 }
             } yoksa eger (kod == 72) {
                 imlec = 0;
@@ -250,7 +252,7 @@ fonk satir_oku(metin istem) -> metin {
         eger (imlec == uz(s)) {
             s += k;
             imlec += 1;
-            upp.yaz(k);
+            konsol_yaz(k);
         } yoksa {
             s = kes(s, 0, imlec) + k + kes_son(s, imlec);
             imlec += 1;

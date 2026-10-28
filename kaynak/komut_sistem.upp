@@ -85,7 +85,7 @@ fonk k_sleep(liste[metin] a, metin girdi) -> sayi {
         eger (kalan > 20) { kalan = 20; }
         upp.uyut(kalan);
         eger (kesme_istendi_mi()) {
-            upp.satir_yaz("^C");
+            konsol_satir("^C");
             don 130;
         }
     }
@@ -132,7 +132,7 @@ fonk k_date(liste[metin] a, metin girdi) -> sayi {
 }
 
 fonk k_clear(liste[metin] a, metin girdi) -> sayi {
-    upp.cekirdek.ekran_temizle();
+    konsol_temizle();
     don 0;
 }
 
@@ -265,8 +265,8 @@ fonk k_sh(liste[metin] a, metin girdi) -> sayi {
         g_betik_derinlik += 1;
         kabuk_dongu();
         g_betik_derinlik -= 1;
-        g_cik = yanlis;
-        don g_cik_kod;
+        cik_koy(yanlis);
+        don cik_kod_al();
     }
     metin y = a[1];
     metin m = dosya_icerik("sh", y);
@@ -288,16 +288,16 @@ fonk k_source(liste[metin] a, metin girdi) -> sayi {
         metin t = upp.metin.kirp(l);
         eger (t == "" || upp.metin.baslar(t, "#")) { devam; }
         kod = satir_calistir(t);
-        eger (g_cik) { dur; }
+        eger (cik_mi()) { dur; }
     }
     don kod;
 }
 
 fonk k_exit(liste[metin] a, metin girdi) -> sayi {
-    g_cik = dogru;
-    g_cik_kod = g_son_kod;
-    eger (a.uzunluk() > 1) { g_cik_kod = sayiya(a[1]); }
-    don g_cik_kod;
+    cik_koy(dogru);
+    cik_kod_koy(son_kod_al());
+    eger (a.uzunluk() > 1) { cik_kod_koy(sayiya(a[1])); }
+    don cik_kod_al();
 }
 
 fonk k_poweroff(liste[metin] a, metin girdi) -> sayi {

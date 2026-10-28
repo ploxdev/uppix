@@ -397,8 +397,8 @@ fonk dz_kaydir() -> bos {
 // ---- ekran ----
 
 fonk dz_boyut() -> bos {
-    g_dz_g = upp.cekirdek.ekran_bilgi(12);
-    g_dz_h = upp.cekirdek.ekran_bilgi(13);
+    g_dz_g = konsol_sutun();
+    g_dz_h = konsol_satir_sayisi();
     eger (sayi_mi(ortam("COLUMNS"))) { g_dz_g = sayiya(ortam("COLUMNS")); }
     eger (sayi_mi(ortam("LINES"))) { g_dz_h = sayiya(ortam("LINES")); }
     eger (g_dz_g < 20) { g_dz_g = 80; }
@@ -441,7 +441,7 @@ fonk dz_metin_ciz(metin bos_isaret) -> bos {
 
 // Biriken çıktıyı imleç gizliyken yazar ve imleci (satır, sütun) konumuna koyar.
 fonk dz_bosalt(sayi satir_no, sayi sutun) -> bos {
-    upp.yaz("\e[?25l" + g_dz_cikti + "\e[{satir_no};{sutun}H\e[?25h");
+    konsol_yaz("\e[?25l" + g_dz_cikti + "\e[{satir_no};{sutun}H\e[?25h");
     g_dz_cikti = "";
 }
 
@@ -461,7 +461,7 @@ fonk dz_tus_kisa(sayi ms) -> sayi {
     }
     sayi bitis = upp.zaman() + ms;
     iken (dogru) {
-        sayi c = upp.cekirdek.tus_oku();
+        sayi c = konsol_tus_oku();
         eger (c != 0) { don c; }
         eger (upp.zaman() >= bitis) { don 0; }
         upp.uyut(2);

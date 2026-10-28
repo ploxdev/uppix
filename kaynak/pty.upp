@@ -1,0 +1,489 @@
+// Uppix — sözde terminaller (PTY) ve kabuk oturumları.
+//
+// /dev/ptmx her açılışta yeni bir PTY ayırır (ana uç); /dev/pts/N yavru uçtur. Linux'taki
+// gibi yavru uç unlockpt (TIOCSPTLCK) ile açılana dek kilitlidir. Bir süreç yavru uç
+// stdin'iyken /bin/sh'ı etkileşimli çalıştırırsa (uçbirim programlarının yaptığı gibi)
+// çekirdek o PTY'ye bağlı yeni bir uppsh oturumu başlatır: oturum ayrı bir çekirdek
+// görevidir, süreç oturum bitene dek bekler ve kabuğun çıkış koduyla biter.
+//
+// Oturum: kabuğun çalışma dizini, $?, exit bayrağı ve konum parametreleri oturum
+// başınadır (0 konsoldur). Ortam değişkenleri, takma adlar, geçmiş ve işler ortaktır.
+// Bir görevin oturumu görev tablosundan (g_oturum_gorev) ya da fork zincirinden
+// (g_yakala_vekil) bulunur. Kabuğun ve komutların terminal G/Ç'si konsol_* üzerinden
+// geçer: konsol oturumunda ekrana/seri porta, PTY oturumunda PTY'nin çıktı tamponuna;
+// tuşlar konsolun kuyruğundan ya da PTY'nin girdi kuyruğundan gelir.
+
+sabit sayi TIOCSWINSZ = 0x5414;
+sabit sayi TIOCGPTN = 0x80045430;
+sabit sayi TIOCSPTLCK = 0x40045431;
+sabit sayi PTY_EN_COK = 16;
+
+sinif Pty {
+    mantik etkin;
+    sayi ana;           // açık ana uç tanımlayıcı sayısı
+    sayi yavru;         // açık yavru uç tanımlayıcı sayısı
+    mantik yavru_acildi;
+    mantik kilitli;
+    mantik bitti;       // bağlı kabuk oturumu bitti
+    liste[sayi] girdi;  // ana uca yazılan baytlar (tuşlar)
+    metin cikti;        // kabuğun ve yavru ucun çıktısı (ana uçtan okunur)
+    sayi satir;
+    sayi sutun;
+    sayi oturum;        // bağlı oturum, yoksa -1
+    sayi dugum;         // /dev/pts/N
+}
+
+sinif Oturum {
+    mantik etkin;
+    sayi pty;           // -1: konsol
+    sayi gorev;         // kabuğun görevi (ön plan bu görevdir)
+    sayi cwd;
+    mantik cik;
+    sayi cik_kod;
+    sayi son_kod;
+    liste[metin] konum;
+}
+
+liste[Pty] g_pty;
+liste[Oturum] g_oturum;
+harita[sayi, sayi] g_oturum_gorev;
+
+// ---------------------------------------------------------------- oturumlar
+
+fonk oturum_kur() -> bos {
+    eger (g_oturum.uzunluk() > 0) { don; }
+    Oturum o;
+    o.etkin = dogru;
+    o.pty = -1;
+    o.gorev = 1;
+    o.cwd = 0;
+    o.cik = yanlis;
+    o.cik_kod = 0;
+    o.son_kod = 0;
+    g_oturum.ekle(o);
+}
+
+// Görevin oturumu: kendi kaydı, yoksa fork zincirindeki ebeveyninki; hiçbiri yoksa konsol.
+fonk gorev_oturumu(sayi g) -> sayi {
+    oturum_kur();
+    sayi adim = 0;
+    iken (adim < 32) {
+        eger (g_oturum_gorev.var_mi(g)) {
+            sayi o = g_oturum_gorev.al(g);
+            eger (o >= 0 && o < g_oturum.uzunluk() && g_oturum[o].etkin) { don o; }
+            don 0;
+        }
+        eger (!g_yakala_vekil.var_mi(g)) { don 0; }
+        g = g_yakala_vekil.al(g);
+        adim += 1;
+    }
+    don 0;
+}
+
+fonk oturum_simdi() -> sayi => gorev_oturumu(upp.cekirdek.gorev_kimlik());
+
+// Yeni görev (iş ya da fork çocuğu) şimdiki görevin oturumunda koşar.
+fonk oturum_gorev_bagla(sayi g, sayi o) -> bos {
+    oturum_kur();
+    eger (o == 0) {
+        eger (g_oturum_gorev.var_mi(g)) { g_oturum_gorev.sil(g); }
+        don;
+    }
+    g_oturum_gorev.koy(g, o);
+}
+
+fonk cwd_al() -> sayi => g_oturum[oturum_simdi()].cwd;
+fonk cwd_koy(sayi no) -> bos { g_oturum[oturum_simdi()].cwd = no; }
+fonk cik_mi() -> mantik => g_oturum[oturum_simdi()].cik;
+fonk cik_koy(mantik c) -> bos { g_oturum[oturum_simdi()].cik = c; }
+fonk cik_kod_al() -> sayi => g_oturum[oturum_simdi()].cik_kod;
+fonk cik_kod_koy(sayi k) -> bos { g_oturum[oturum_simdi()].cik_kod = k; }
+fonk son_kod_al() -> sayi => g_oturum[oturum_simdi()].son_kod;
+fonk son_kod_koy(sayi k) -> bos { g_oturum[oturum_simdi()].son_kod = k; }
+fonk konum_al() -> liste[metin] => g_oturum[oturum_simdi()].konum;
+fonk konum_koy(liste[metin] k) -> bos { g_oturum[oturum_simdi()].konum = k; }
+
+// Ön plandaki görev: oturumun kabuk görevi (konsolda 1).
+fonk oturum_on_gorev(sayi g) -> sayi => g_oturum[gorev_oturumu(g)].gorev;
+
+// Bağlama noktası ayrılırken içinde kalan çalışma dizinleri noktaya taşınır.
+fonk oturum_cwd_tasi(sayi nokta) -> bos {
+    oturum_kur();
+    her (sayi i in 0..g_oturum.uzunluk()) {
+        eger (g_oturum[i].etkin && fs_ata_mi(nokta, g_oturum[i].cwd) && g_oturum[i].cwd != nokta) { g_oturum[i].cwd = nokta; }
+    }
+}
+
+// ---------------------------------------------------------------- konsol katmanı
+
+fonk oturum_pty() -> sayi => g_oturum[oturum_simdi()].pty;
+
+// Şimdiki görev konsolun sanal terminalinde mi (KD/VT ioctl'ları, ham klavye)?
+fonk konsol_vt_mi() -> mantik => oturum_pty() < 0;
+
+fonk pty_yaz(sayi p, metin s) -> bos {
+    eger (p < 0 || !g_pty[p].etkin) { don; }
+    g_pty[p].cikti += upp.metin.degistir(s, "\n", "\r\n");
+}
+
+fonk konsol_yaz(metin s) -> bos {
+    sayi p = oturum_pty();
+    eger (p >= 0) {
+        pty_yaz(p, s);
+        don;
+    }
+    upp.yaz(s);
+}
+
+fonk konsol_satir(metin s) -> bos {
+    sayi p = oturum_pty();
+    eger (p >= 0) {
+        pty_yaz(p, s + "\n");
+        don;
+    }
+    upp.satir_yaz(s);
+}
+
+fonk konsol_hata(metin s) -> bos {
+    sayi p = oturum_pty();
+    eger (p >= 0) {
+        pty_yaz(p, s + "\n");
+        don;
+    }
+    upp.hata_satir_yaz(s);
+}
+
+fonk konsol_temizle() -> bos {
+    sayi p = oturum_pty();
+    eger (p >= 0) {
+        pty_yaz(p, "\e[H\e[2J");
+        don;
+    }
+    upp.cekirdek.ekran_temizle();
+}
+
+fonk konsol_sutun() -> sayi {
+    sayi p = oturum_pty();
+    eger (p >= 0) { don g_pty[p].sutun; }
+    don upp.cekirdek.ekran_bilgi(12);
+}
+
+fonk konsol_satir_sayisi() -> sayi {
+    sayi p = oturum_pty();
+    eger (p >= 0) { don g_pty[p].satir; }
+    don upp.cekirdek.ekran_bilgi(13);
+}
+
+// Bekleyen tuş (beklemeden); yoksa 0. Ana uç kapanmışsa PTY'de 0.
+fonk konsol_tus_oku() -> sayi {
+    sayi p = oturum_pty();
+    eger (p < 0) { don upp.cekirdek.tus_oku(); }
+    eger (g_pty[p].girdi.uzunluk() == 0) { don 0; }
+    sayi c = g_pty[p].girdi[0];
+    g_pty[p].girdi.sil(0);
+    don c;
+}
+
+// Tuş gelene dek bekler. PTY'nin ana ucu kapandıysa Ctrl-D (EOF) döner: kabuk çıkar.
+fonk konsol_tus_bekle() -> sayi {
+    sayi p = oturum_pty();
+    eger (p < 0) { don upp.cekirdek.tus_bekle(); }
+    iken (dogru) {
+        eger (g_pty[p].girdi.uzunluk() > 0) {
+            sayi c = g_pty[p].girdi[0];
+            g_pty[p].girdi.sil(0);
+            don c;
+        }
+        eger (g_pty[p].ana <= 0) { don 4; }
+        upp.uyut(1);
+    }
+    don 0;
+}
+
+// PTY oturumunda ön plandaki komut için Ctrl-C: kuyruktaki 3'ler çıkarılır.
+fonk pty_kesme_var_mi(sayi p) -> mantik {
+    mantik var = yanlis;
+    sayi i = 0;
+    iken (i < g_pty[p].girdi.uzunluk()) {
+        eger (g_pty[p].girdi[i] == 3) {
+            g_pty[p].girdi.sil(i);
+            var = dogru;
+        } yoksa {
+            i += 1;
+        }
+    }
+    eger (g_pty[p].ana <= 0) { var = dogru; }
+    don var;
+}
+
+// ---------------------------------------------------------------- PTY nesnesi
+
+fonk pty_yeni() -> sayi {
+    Pty y;
+    y.etkin = dogru;
+    y.ana = 0;
+    y.yavru = 0;
+    y.yavru_acildi = yanlis;
+    y.kilitli = dogru;
+    y.bitti = yanlis;
+    y.cikti = "";
+    y.satir = 24;
+    y.sutun = 80;
+    y.oturum = -1;
+    y.dugum = -1;
+    sayi p = -1;
+    her (sayi i in 0..g_pty.uzunluk()) {
+        eger (!g_pty[i].etkin) {
+            p = i;
+            dur;
+        }
+    }
+    eger (p < 0) {
+        eger (g_pty.uzunluk() >= PTY_EN_COK) { don -1; }
+        p = g_pty.uzunluk();
+        g_pty.ekle(y);
+    } yoksa {
+        g_pty.yaz(p, y);
+    }
+    sayi pts = fs_coz("/dev/pts");
+    eger (pts >= 0) {
+        sayi d = fs_aygit(pts, "{p}", "pts");
+        g_fs[d].kip = 400;
+        g_fs[d].ek = p;
+        g_pty[p].dugum = d;
+    }
+    don p;
+}
+
+// İki uç da kapandı ve oturum yoksa PTY ve /dev/pts/N kalkar.
+fonk pty_temizle(sayi p) -> bos {
+    eger (p < 0 || p >= g_pty.uzunluk() || !g_pty[p].etkin) { don; }
+    eger (g_pty[p].ana > 0 || g_pty[p].yavru > 0 || g_pty[p].oturum >= 0) { don; }
+    g_pty[p].etkin = yanlis;
+    g_pty[p].girdi.temizle();
+    g_pty[p].cikti = "";
+    sayi d = g_pty[p].dugum;
+    g_pty[p].dugum = -1;
+    eger (d >= 0 && d < g_fs.uzunluk() && g_fs[d].aygit == "pts" && g_fs[d].ek == p) { fs_sil(d); }
+}
+
+fonk pty_al(sayi tur, sayi no) -> bos {
+    eger (no < 0 || no >= g_pty.uzunluk()) { don; }
+    eger (tur == FD_PTY_ANA) { g_pty[no].ana += 1; }
+    eger (tur == FD_PTY_YAVRU) {
+        g_pty[no].yavru += 1;
+        g_pty[no].yavru_acildi = dogru;
+    }
+}
+
+fonk pty_birak(sayi tur, sayi no) -> bos {
+    eger (no < 0 || no >= g_pty.uzunluk()) { don; }
+    eger (tur == FD_PTY_ANA) { g_pty[no].ana -= 1; }
+    eger (tur == FD_PTY_YAVRU) { g_pty[no].yavru -= 1; }
+    pty_temizle(no);
+}
+
+// Ana uçtan okunacak bir şey kalmadı: kabuk oturumu bitti ya da açılmış yavru uçlar kapandı.
+fonk pty_kapandi_mi(sayi p) -> mantik => g_pty[p].bitti || (g_pty[p].oturum < 0 && g_pty[p].yavru_acildi && g_pty[p].yavru <= 0);
+
+// /dev/pts/N açılışı: düğümün PTY'si (ek); kilitliyse ya da yoksa EIO.
+fonk pty_yavru_ac(sayi dugum) -> sayi {
+    sayi p = g_fs[dugum].ek;
+    eger (p < 0 || p >= g_pty.uzunluk() || !g_pty[p].etkin || g_pty[p].kilitli) { don -EIO; }
+    don p;
+}
+
+// ---------------------------------------------------------------- okuma ve yazma
+
+fonk pty_ana_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi p = g_fd_no[y];
+    iken (g_pty[p].cikti == "") {
+        eger (pty_kapandi_mi(p)) { don -EIO; }
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    metin m = g_pty[p].cikti;
+    sayi var = bayt_say(m);
+    sayi k = upp.min(n, var);
+    sayi t = upp.tampon.yeni(var + 1);
+    upp.tampon.metin_yaz(t, 0, m);
+    mantik ok = upp.cekirdek.kullanici_yaz(g_surec[s].ka, buf, t, 0, k);
+    eger (ok) {
+        eger (k == var) { g_pty[p].cikti = ""; } yoksa { g_pty[p].cikti = upp.tampon.metin(t, k, var - k); }
+    }
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    don k;
+}
+
+fonk pty_ana_yaz(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi p = g_fd_no[y];
+    eger (pty_kapandi_mi(p)) { don -EIO; }
+    sayi t = upp.tampon.yeni(n);
+    mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, buf, t, 0, n);
+    eger (ok) {
+        her (sayi i in 0..n) { g_pty[p].girdi.ekle(upp.tampon.oku8(t, i)); }
+    }
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    don n;
+}
+
+// Yavru uç: okuma ham baytlardır (satır düzeni yok), yazma çıktı tamponuna (\n → \r\n).
+fonk pty_yavru_oku(sayi s, sayi y, sayi buf, sayi n) -> sayi {
+    sayi p = g_fd_no[y];
+    iken (g_pty[p].girdi.uzunluk() == 0) {
+        eger (g_pty[p].ana <= 0) { don -EIO; }
+        eger ((g_fd_bayrak[y] & O_NONBLOCK) != 0) { don -EAGAIN; }
+        sayi r = sc_bekle(s);
+        eger (r < 0) { don r; }
+    }
+    sayi k = upp.min(n, g_pty[p].girdi.uzunluk());
+    sayi t = upp.tampon.yeni(k);
+    her (sayi i in 0..k) { upp.tampon.yaz8(t, i, g_pty[p].girdi[i]); }
+    mantik ok = upp.cekirdek.kullanici_yaz(g_surec[s].ka, buf, t, 0, k);
+    upp.tampon.birak(t);
+    eger (!ok) { don -EFAULT; }
+    her (sayi i in 0..k) { g_pty[p].girdi.sil(0); }
+    don k;
+}
+
+fonk pty_yavru_yaz(sayi s, sayi y, metin veri) -> sayi {
+    sayi p = g_fd_no[y];
+    eger (g_pty[p].ana <= 0) { don -EIO; }
+    pty_yaz(p, veri);
+    don bayt_say(veri);
+}
+
+fonk pty_hazir(sayi tur, sayi p) -> sayi {
+    sayi m = POLLOUT;
+    eger (tur == FD_PTY_ANA) {
+        eger (g_pty[p].cikti != "") { m = m | POLLIN; }
+        eger (pty_kapandi_mi(p)) { m = POLLIN | POLLHUP; }
+        don m;
+    }
+    eger (g_pty[p].girdi.uzunluk() > 0) { m = m | POLLIN; }
+    eger (g_pty[p].ana <= 0) { m = m | POLLHUP; }
+    don m;
+}
+
+// ---------------------------------------------------------------- ioctl
+
+fonk pty_ioctl(sayi s, sayi y, sayi istek, sayi arg) -> sayi {
+    sayi tur = g_fd_tur[y];
+    sayi p = g_fd_no[y];
+    sayi i = istek & 0xFFFFFFFF;
+    eger (i == TIOCGPTN) {
+        eger (tur != FD_PTY_ANA) { don -ENOTTY; }
+        don sc_int_ver(s, arg, p);
+    }
+    eger (i == TIOCSPTLCK) {
+        eger (tur != FD_PTY_ANA) { don -ENOTTY; }
+        sayi t = upp.tampon.yeni(4);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 4);
+        sayi v = upp.tampon.oku32(t, 0);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+        g_pty[p].kilitli = v != 0;
+        don 0;
+    }
+    don pty_ioctl_terminal(s, p, i, arg);
+}
+
+// İki uçta ve PTY oturumundaki süreçlerin terminalinde ortak: boyut, termios, denetim
+// terminali. termios saklanmaz (satır düzeni kabuğundur).
+fonk pty_ioctl_terminal(sayi s, sayi p, sayi i, sayi arg) -> sayi {
+    eger (i == TIOCGWINSZ) {
+        sayi t = upp.tampon.yeni(8);
+        upp.tampon.doldur(t, 0, 8, 0);
+        upp.tampon.yaz16(t, 0, g_pty[p].satir);
+        upp.tampon.yaz16(t, 2, g_pty[p].sutun);
+        don sc_yapi_ver(s, arg, t, 8);
+    }
+    eger (i == TIOCSWINSZ) {
+        sayi t = upp.tampon.yeni(8);
+        mantik ok = upp.cekirdek.kullanici_oku(g_surec[s].ka, arg, t, 0, 8);
+        sayi sat = upp.tampon.oku16(t, 0);
+        sayi sut = upp.tampon.oku16(t, 2);
+        upp.tampon.birak(t);
+        eger (!ok) { don -EFAULT; }
+        eger (sat > 0) { g_pty[p].satir = sat; }
+        eger (sut > 0) { g_pty[p].sutun = sut; }
+        don 0;
+    }
+    eger (i == TCGETS) { don sc_termios_ver(s, arg); }
+    eger (i >= TCSETS && i <= TCSETSF) { don 0; }
+    eger (i == TIOCSCTTY || i == TIOCNOTTY || i == TIOCSPGRP) { don 0; }
+    eger (i == TIOCGPGRP || i == TIOCGSID) { don sc_int_ver(s, arg, g_surec[s].pgid); }
+    don -ENOTTY;
+}
+
+// ---------------------------------------------------------------- kabuk oturumu
+
+fonk pty_oturum_gorevi(sayi o) -> bos {
+    konsol_satir("\e[1;36mUppix\e[0m uçbirimi: uppsh ({g_komut.uzunluk()} yerleşik komut, 'help')");
+    kabuk_dongu();
+    g_oturum[o].etkin = yanlis;
+    sayi p = g_oturum[o].pty;
+    eger (p >= 0 && p < g_pty.uzunluk()) {
+        g_pty[p].bitti = dogru;
+        g_pty[p].oturum = -1;
+        pty_temizle(p);
+    }
+    eger (g_oturum_gorev.var_mi(g_oturum[o].gorev)) { g_oturum_gorev.sil(g_oturum[o].gorev); }
+}
+
+// Etkileşimli /bin/sh, stdin'i PTY yavru ucu olan süreçte: oturum başlar, süreç onu bekler
+// ve kabuğun çıkış koduyla biter (bu çağrı kullanıcı koduna dönmez).
+fonk pty_kabuk_yurut(sayi s, sayi p) -> sayi {
+    oturum_kur();
+    Oturum o;
+    o.etkin = dogru;
+    o.pty = p;
+    o.gorev = -1;
+    o.cwd = g_surec[s].cwd;
+    o.cik = yanlis;
+    o.cik_kod = 0;
+    o.son_kod = 0;
+    sayi no = -1;
+    her (sayi i in 1..g_oturum.uzunluk()) {
+        eger (!g_oturum[i].etkin) {
+            no = i;
+            dur;
+        }
+    }
+    eger (no < 0) {
+        no = g_oturum.uzunluk();
+        g_oturum.ekle(o);
+    } yoksa {
+        g_oturum.yaz(no, o);
+    }
+    sayi g = upp.cekirdek.gorev_baslat(pty_oturum_gorevi, no, "sh");
+    eger (g < 0) {
+        g_oturum[no].etkin = yanlis;
+        don -EAGAIN;
+    }
+    g_oturum[no].gorev = g;
+    g_oturum_gorev.koy(g, no);
+    g_pty[p].oturum = no;
+    g_surec[s].ad = "sh";
+    klog_sessiz("süreç {g_surec[s].pid}: /dev/pts/{p} üzerinde uppsh oturumu (görev {g})");
+    iken (g_oturum[no].etkin) {
+        upp.uyut(10);
+        eger (g_surec[s].bekleyen) {
+            g_oturum[no].cik = dogru;
+            g_pty[p].girdi.ekle(4);
+            don sc_bekleyen_bitir(s);
+        }
+    }
+    upp.cekirdek.kullanici_cikis_iste(g_oturum[no].cik_kod % 256);
+    don 0;
+}
+
+// Etkileşimli kabuk çağrısı mı: argüman yok ya da yalnızca -i/-l/-.
+fonk kabuk_etkilesimli_mi(liste[metin] arg) -> mantik {
+    eger (arg.uzunluk() <= 1) { don dogru; }
+    eger (arg.uzunluk() == 2) { don arg[1] == "-i" || arg[1] == "-l" || arg[1] == "-"; }
+    don yanlis;
+}

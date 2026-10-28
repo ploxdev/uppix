@@ -27,6 +27,7 @@ sabit sayi EISDIR = 21;
 sabit sayi EINVAL = 22;
 sabit sayi EMFILE = 24;
 sabit sayi ENOTTY = 25;
+sabit sayi ENOSPC = 28;
 sabit sayi ESPIPE = 29;
 sabit sayi EROFS = 30;
 sabit sayi EPIPE = 32;
@@ -256,6 +257,16 @@ fonk sistem_cagrisi(sayi no, sayi a1, sayi a2, sayi a3, sayi a4, sayi a5, sayi a
     eger (no == 260) { don sc_chown(s, a1, a2, -1); }
     eger (no == 121 || no == 124) { don sc_getpgid(s, isaretli32(a1)); } // getpgid, getsid
     eger (no == 99) { don sc_sysinfo(s, a1); }
+    eger (no == 169) { don sc_reboot(isaretli32(a1), isaretli32(a2), isaretli32(a3)); }
+    // sync/syncfs dosya sistemlerini boşaltır (sync komutu gibi); yazmalar zaten diske gider
+    eger (no == 162 || no == 306) {
+        fs_tum_ayir();
+        don 0;
+    }
+    eger (no == 74 || no == 75) {                             // fsync, fdatasync
+        eger (!fd_gecerli(s, a1)) { don -EBADF; }
+        don 0;
+    }
     eger (!g_sc_bildirildi.var_mi(no)) {
         g_sc_bildirildi.koy(no, dogru);
         klog_sessiz("sistem çağrısı desteklenmiyor: {no} (süreç {g_surec[s].pid} {g_surec[s].ad})");
@@ -336,7 +347,28 @@ fonk sc_yapi_ver(sayi s, sayi adres, sayi t, sayi n) -> sayi {
 // Oluşturma kipi: izin bitleri, sürecin umask'ı düşülür.
 fonk sc_kip(sayi s, sayi kip) -> sayi => (kip & 4095) - (kip & g_surec[s].umask & 4095);
 
-fonk sc_on_planda(sayi s) -> mantik => g_surec[s].gorev == 1;
+fonk sc_on_planda(sayi s) -> mantik => g_surec[s].gorev == oturum_on_gorev(g_surec[s].gorev);
+
+// reboot(sihir1, sihir2, komut): RESTART yeniden başlatır, POWER_OFF ve HALT kapatır
+// (dosya sistemleri önce boşaltılır); CAD_ON/CAD_OFF kabul edilir.
+fonk sc_reboot(sayi sihir1, sayi sihir2, sayi komut) -> sayi {
+    eger (sihir1 != isaretli32(0xFEE1DEAD)) { don -EINVAL; }
+    eger (sihir2 != 672274793 && sihir2 != 85072278 && sihir2 != 369367448 && sihir2 != 537993216) { don -EINVAL; }
+    eger (komut == 0x01234567) {
+        fs_tum_ayir();
+        upp.satir_yaz("Yeniden başlatılıyor...");
+        upp.cekirdek.yeniden_baslat();
+        don 0;
+    }
+    eger (komut == 0x4321FEDC || komut == isaretli32(0xCDEF0123)) {
+        fs_tum_ayir();
+        upp.satir_yaz("Sistem kapatılıyor...");
+        upp.cekirdek.kapat();
+        don 0;
+    }
+    eger (komut == isaretli32(0x89ABCDEF) || komut == 0) { don 0; }
+    don -EINVAL;
+}
 
 // setre*/setres*: her kimlik -1 (değişmez) ya da 0 olabilir.
 fonk sc_kimlik_kur(sayi a, sayi b, sayi c) -> sayi {
@@ -418,7 +450,9 @@ fonk sc_read(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_EVENTFD) { don sayac_oku(s, y, buf, n); }
     eger (tur == FD_TIMERFD) { don zamanlayici_oku(s, y, buf, n); }
     eger (tur == FD_EPOLL) { don -EINVAL; }
-    eger (tur == FD_TERMINAL && g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) { don sc_tty_ham_oku(s, y, buf, n); }
+    eger (tur == FD_PTY_ANA) { don pty_ana_oku(s, y, buf, n); }
+    eger (tur == FD_PTY_YAVRU) { don pty_yavru_oku(s, y, buf, n); }
+    eger (tur == FD_TERMINAL && konsol_vt_mi() && g_kb_kip != K_XLATE && g_kb_kip != K_UNICODE) { don sc_tty_ham_oku(s, y, buf, n); }
     eger (tur == FD_TERMINAL) {
         eger (g_surec[s].satir_artik == "") {
             sayi r = sc_terminal_satir(s);
@@ -476,8 +510,10 @@ fonk sc_write(sayi s, sayi fd, sayi buf, sayi n) -> sayi {
     eger (tur == FD_SOKET) { don sc_soket_yaz(s, y, fd, buf, n); }
     eger (tur == FD_EVENTFD) { don sayac_yaz(s, y, buf, n); }
     eger (tur == FD_TIMERFD || tur == FD_EPOLL) { don -EINVAL; }
+    eger (tur == FD_PTY_ANA) { don pty_ana_yaz(s, y, buf, n); }
     metin veri = sc_oku_metin(s, buf, n);
     eger (veri == yok) { don -EFAULT; }
+    eger (tur == FD_PTY_YAVRU) { don pty_yavru_yaz(s, y, veri); }
     eger (tur == FD_TERMINAL) {
         // stdout boruya/yönlendirmeye yakalanır; stderr doğrudan terminale gider
         eger (fd == 2 || g_fd_no[y] == -2) {
@@ -541,6 +577,8 @@ fonk sc_open(sayi s, sayi dirfd, sayi yol_adr, sayi bayrak, sayi kip) -> sayi {
         eger (a == "null") { tur = FD_NULL; }
         yoksa eger (a == "konsol") { tur = FD_TERMINAL; }
         yoksa eger (a == "fb") { tur = FD_FB; }
+        yoksa eger (a == "ptmx") { tur = FD_PTY_ANA; }
+        yoksa eger (a == "pts") { tur = FD_PTY_YAVRU; }
         yoksa eger (olay_aygiti(a) >= 0) { tur = FD_OLAY; }
         yoksa eger (a == "soket") { don -ENXIO; }
         yoksa eger (a != "rastgele") { don -EACCES; }
@@ -555,6 +593,14 @@ fonk sc_open(sayi s, sayi dirfd, sayi yol_adr, sayi bayrak, sayi kip) -> sayi {
     eger (fd < 0) { don -EMFILE; }
     // girdi aygıtının her açılışı yeni bir istemcidir (kendi olay kuyruğu)
     eger (tur == FD_OLAY) { no = girdi_istemci_yeni(olay_aygiti(g_fs[no].aygit)); }
+    eger (tur == FD_PTY_ANA) {
+        no = pty_yeni();
+        eger (no < 0) { don -ENOSPC; }
+    }
+    eger (tur == FD_PTY_YAVRU) {
+        no = pty_yavru_ac(no);
+        eger (no < 0) { don no; }
+    }
     fd_kur(s, fd, tur, no, bayrak);
     eger (tur == FD_TERMINAL) { g_fd_no.yaz(fd_yer(s, fd), -2); }
     don fd;
@@ -646,6 +692,17 @@ fonk sc_fstat(sayi s, sayi fd, sayi buf) -> sayi {
         upp.tampon.yaz64(t, 40, 13 * 256 + kucuk);
         don sc_yapi_ver(s, buf, t, 144);
     }
+    eger (tur == FD_PTY_ANA || tur == FD_PTY_YAVRU) {
+        // ptmx 5:2 (0666), yavru 136:N (0620)
+        sayi t = sc_stat_tampon(8192 + 438, 1, 1, 1, 0, simdi());
+        sayi aygit = 5 * 256 + 2;
+        eger (tur == FD_PTY_YAVRU) {
+            t = sc_stat_tampon(8192 + 400, 1, 1, 1, 0, simdi());
+            aygit = 136 * 256 + g_fd_no[y];
+        }
+        upp.tampon.yaz64(t, 40, aygit);
+        don sc_yapi_ver(s, buf, t, 144);
+    }
     eger (tur == FD_GIRDI || fd_boru_mu(tur)) {
         // boru: S_IFIFO | 0600
         don sc_yapi_ver(s, buf, sc_stat_tampon(4096 + 384, 1, 1, 1, 0, simdi()), 144);
@@ -660,7 +717,7 @@ fonk sc_lseek(sayi s, sayi fd, sayi ofs, sayi nereden) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi y = fd_yer(s, fd);
     sayi tur = g_fd_tur[y];
-    eger (tur == FD_TERMINAL || tur == FD_GIRDI || tur == FD_OLAY || fd_boru_mu(tur) || fd_anonim_mi(tur)) { don -ESPIPE; }
+    eger (tur == FD_TERMINAL || tur == FD_GIRDI || tur == FD_OLAY || tur == FD_PTY_ANA || tur == FD_PTY_YAVRU || fd_boru_mu(tur) || fd_anonim_mi(tur)) { don -ESPIPE; }
     eger (tur == FD_NULL || tur == FD_FB) { don 0; }
     sayi yeni = 0;
     eger (nereden == 0) {
@@ -901,6 +958,21 @@ fonk sc_brk(sayi s, sayi yeni) -> sayi {
 
 // ---- ioctl ----
 
+// struct termios (60 bayt): kanonik kip, yankı, ISIG; isatty() bunu kullanır.
+fonk sc_termios_ver(sayi s, sayi arg) -> sayi {
+    sayi t = upp.tampon.yeni(60);
+    upp.tampon.doldur(t, 0, 60, 0);
+    upp.tampon.yaz32(t, 0, 0x500);     // c_iflag: ICRNL | IXON
+    upp.tampon.yaz32(t, 4, 0x5);       // c_oflag: OPOST | ONLCR
+    upp.tampon.yaz32(t, 8, 0xBF);      // c_cflag: B38400 | CS8 | CREAD
+    upp.tampon.yaz32(t, 12, 0x8A3B);   // c_lflag: ISIG ICANON ECHO ECHOE ECHOK ECHOCTL ECHOKE IEXTEN
+    upp.tampon.yaz8(t, 17, 3);         // VINTR = ^C
+    upp.tampon.yaz8(t, 19, 127);       // VERASE
+    upp.tampon.yaz8(t, 21, 4);         // VEOF = ^D
+    upp.tampon.yaz8(t, 23, 1);         // VMIN
+    don sc_yapi_ver(s, arg, t, 60);
+}
+
 fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
     eger (!fd_gecerli(s, fd)) { don -EBADF; }
     sayi tur = g_fd_tur[fd_yer(s, fd)];
@@ -919,6 +991,16 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
         don 0;
     }
     eger (tur == FD_OLAY) { don sc_olay_ioctl(s, fd_yer(s, fd), istek, arg); }
+    eger (tur == FD_PTY_ANA || tur == FD_PTY_YAVRU) { don pty_ioctl(s, fd_yer(s, fd), istek, arg); }
+    eger (tur == FD_TERMINAL && !konsol_vt_mi()) {
+        // PTY oturumundaki sürecin terminali: KD/VT ioctl'ları yok, boyut PTY'den
+        sayi p = oturum_pty();
+        eger (istek == TIOCGWINSZ || istek == TIOCSWINSZ || istek == TCGETS || (istek >= TCSETS && istek <= TCSETSF) ||
+              istek == TIOCSCTTY || istek == TIOCNOTTY || istek == TIOCSPGRP || istek == TIOCGPGRP || istek == TIOCGSID) {
+            don pty_ioctl_terminal(s, p, istek, arg);
+        }
+        don -ENOTTY;
+    }
     eger (tur == FD_TERMINAL) {
         sayi k = sc_konsol_ioctl(s, istek & 0xFFFFFFFF, arg);
         eger (k != IOCTL_YOK) { don k; }
@@ -948,20 +1030,7 @@ fonk sc_ioctl(sayi s, sayi fd, sayi istek, sayi arg) -> sayi {
             eger (!upp.cekirdek.kullanici_yaz(g_surec[s].ka, arg, g_tty_termios, 0, 60)) { don -EFAULT; }
             don 0;
         }
-        eger (istek == TCGETS) {
-            // struct termios (60 bayt): kanonik kip, yankı, ISIG; isatty() bunu kullanır
-            sayi t = upp.tampon.yeni(60);
-            upp.tampon.doldur(t, 0, 60, 0);
-            upp.tampon.yaz32(t, 0, 0x500);     // c_iflag: ICRNL | IXON
-            upp.tampon.yaz32(t, 4, 0x5);       // c_oflag: OPOST | ONLCR
-            upp.tampon.yaz32(t, 8, 0xBF);      // c_cflag: B38400 | CS8 | CREAD
-            upp.tampon.yaz32(t, 12, 0x8A3B);   // c_lflag: ISIG ICANON ECHO ECHOE ECHOK ECHOCTL ECHOKE IEXTEN
-            upp.tampon.yaz8(t, 17, 3);         // VINTR = ^C
-            upp.tampon.yaz8(t, 19, 127);       // VERASE
-            upp.tampon.yaz8(t, 21, 4);         // VEOF = ^D
-            upp.tampon.yaz8(t, 23, 1);         // VMIN
-            don sc_yapi_ver(s, arg, t, 60);
-        }
+        eger (istek == TCGETS) { don sc_termios_ver(s, arg); }
         don -ENOTTY;
     }
     eger (tur == FD_FB && istek == FBIOPUT_VSCREENINFO) {
@@ -1031,6 +1100,10 @@ fonk sc_fionread(sayi s, sayi y, sayi arg) -> sayi {
         n = upp.max(bayt_say(g_surec[s].girdi) - g_surec[s].girdi_konum, 0);
     } yoksa eger (tur == FD_DOSYA) {
         n = upp.max(fs_boyut(no) - g_fd_konum[y], 0);
+    } yoksa eger (tur == FD_PTY_ANA) {
+        n = bayt_say(g_pty[no].cikti);
+    } yoksa eger (tur == FD_PTY_YAVRU) {
+        n = g_pty[no].girdi.uzunluk();
     } yoksa {
         don -ENOTTY;
     }

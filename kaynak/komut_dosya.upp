@@ -210,14 +210,14 @@ fonk k_cd(liste[metin] a, metin girdi) -> sayi {
         hata_bildir("cd: {hedef}: bir dizin değil");
         don 1;
     }
-    g_ortam.koy("OLDPWD", fs_yol(g_cwd));
-    g_cwd = no;
+    g_ortam.koy("OLDPWD", fs_yol(cwd_al()));
+    cwd_koy(no);
     g_ortam.koy("PWD", fs_yol(no));
     don 0;
 }
 
 fonk k_pwd(liste[metin] a, metin girdi) -> sayi {
-    satir(fs_yol(g_cwd));
+    satir(fs_yol(cwd_al()));
     don 0;
 }
 
@@ -240,7 +240,7 @@ fonk k_cat(liste[metin] a, metin girdi) -> sayi {
 }
 
 fonk mkdir_p(metin yol) -> sayi {
-    sayi cur = g_cwd;
+    sayi cur = cwd_al();
     eger (upp.metin.baslar(yol, "/")) { cur = 0; }
     her (oto p in upp.metin.bol(yol, "/")) {
         eger (p == "" || p == ".") { devam; }
@@ -313,7 +313,7 @@ fonk k_rmdir(liste[metin] a, metin girdi) -> sayi {
         } yoksa eger (fs_cocuklar(no).uzunluk() > 0) {
             hata_bildir("rmdir: '{y}' kaldırılamadı: dizin boş değil");
             kod = 1;
-        } yoksa eger (no == 0 || fs_ata_mi(no, g_cwd)) {
+        } yoksa eger (no == 0 || fs_ata_mi(no, cwd_al())) {
             hata_bildir("rmdir: '{y}' kaldırılamadı: aygıt ya da kaynak meşgul");
             kod = 1;
         } yoksa eger (!fs_sil(no)) {
@@ -375,14 +375,14 @@ fonk k_rm(liste[metin] a, metin girdi) -> sayi {
             kod = 1;
             devam;
         }
-        mantik cwd_icinde = fs_ata_mi(no, g_cwd);
+        mantik cwd_icinde = fs_ata_mi(no, cwd_al());
         sayi ust_no = g_fs[no].ust;
         eger (!fs_sil(no)) {
             hata_bildir("rm: '{y}' silinemiyor: " + g_fs_hata);
             kod = 1;
             devam;
         }
-        eger (cwd_icinde) { g_cwd = ust_no; }
+        eger (cwd_icinde) { cwd_koy(ust_no); }
     }
     don kod;
 }
